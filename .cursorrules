@@ -1,0 +1,123 @@
+# .cursorrules
+# Project: Client Scope Guard (Next.js App Router + Prisma 7 + Neon)
+# Goal: Build a B2B SaaS that checks if client requests are in-scope vs a contract/quote.
+# Current stage: Auth done (register/login/me/logout) + UI login/register/dashboard (Tailwind).
+
+You are working in a Next.js App Router project (Next 16.1.6) deployed on Vercel.
+Database: Neon Postgres.
+ORM: Prisma 7 with Neon adapter (NO Prisma Accelerate).
+Styling: Tailwind CSS.
+
+Follow these rules strictly.
+
+──────────────────────────────────────────────────────────────────────────────
+1) CORE PRINCIPLES
+──────────────────────────────────────────────────────────────────────────────
+- Keep it simple and shippable (MVP-first).
+- Do not refactor unrelated code. Make minimal changes to achieve the requested feature.
+- Prefer server-side auth checks for protected pages (RSC + redirect).
+- All sensitive auth state must remain server-side (HttpOnly session cookie).
+
+──────────────────────────────────────────────────────────────────────────────
+2) STACK & VERSIONS
+──────────────────────────────────────────────────────────────────────────────
+- Next.js: 16.1.6 (App Router)
+- React: 19
+- Tailwind: v4
+- Prisma: 7.x
+- DB: Neon Postgres
+- Hashing: argon2
+
+Important Next.js detail:
+- next/headers cookies() is async in this project.
+  Always use: `await cookies()` and `await getSessionIdFromCookie()`.
+
+──────────────────────────────────────────────────────────────────────────────
+3) DATABASE & PRISMA (IMPORTANT)
+──────────────────────────────────────────────────────────────────────────────
+- Prisma uses Neon adapter in src/lib/db/prisma.ts.
+- Do NOT use Prisma Accelerate or @prisma/extension-accelerate.
+- DATABASE_URL must be the Neon postgresql://... connection string (sslmode=require).
+
+PrismaClient creation rule:
+- Always construct PrismaClient with the Neon adapter.
+- Keep a singleton using globalThis in dev.
+
+──────────────────────────────────────────────────────────────────────────────
+4) AUTH MODEL (CURRENT IMPLEMENTATION)
+──────────────────────────────────────────────────────────────────────────────
+Auth is session-based with HttpOnly cookies (no JWT in browser).
+
+Cookie:
+- Name: csg_session
+- HttpOnly, sameSite=lax, secure in production, path="/"
+
+Tables:
+- User: { id, email(unique), passwordHash, name?, createdAt }
+- Session: { id, userId, createdAt, expiresAt, relation to User }
+
+Session rules:
+- getCurrentUser() reads cookie -> loads session -> checks expiresAt.
+- If session is expired: delete session best-effort AND clear cookie best-effort.
+- makeSessionExpiry(days=30) returns a Date in the future.
+
+Endpoints:
+- GET  /api/auth/me      -> { ok: true, user: CurrentUser | null }
+- POST /api/auth/register -> creates user + session + sets cookie
+- POST /api/auth/login    -> verifies password + creates session + sets cookie
+- POST /api/auth/logout   -> deletes session best-effort + clears cookie + redirect/login or JSON
+
+Runtime:
+- All auth routes must run on Node:
+  `export const runtime = "nodejs";`
+
+Security:
+- Never store tokens in localStorage/sessionStorage.
+- Never expose password hashes.
+- Avoid verbose error messages for invalid credentials.
+
+──────────────────────────────────────────────────────────────────────────────
+5) UI & ROUTING
+──────────────────────────────────────────────────────────────────────────────
+Pages:
+- /login      (client component, Tailwind)
+- /register   (client component, Tailwind)
+- /dashboard  (server component, protected; redirects to /login if not authenticated)
+
+UI rules:
+- Use Tailwind utility classes (consistent style with existing pages).
+- Keep design consistent: soft gray background, white card, rounded-3xl, border-zinc-200.
+- No new UI library (shadcn) unless explicitly requested.
+
+Navigation rules:
+- After successful login/register: push "/dashboard" and router.refresh().
+
+──────────────────────────────────────────────────────────────────────────────
+6) FUTURE FEATURES (NEXT STEPS) — DO NOT IMPLEMENT UNLESS ASKED
+──────────────────────────────────────────────────────────────────────────────
+Core MVP flow to implement next:
+1) Project CRUD
+2) Document upload (DOCX/PDF) + text extraction
+3) Chunking + storage
+4) Generate Scope Rules (AI)
+5) Check Client Request vs Scope (AI)
+6) History UI
+
+Data fetching rule for business data:
+- Use TanStack Query only when we start Projects/Documents/Checks lists and caching.
+- Auth forms can remain plain fetch() POST.
+
+──────────────────────────────────────────────────────────────────────────────
+7) FILE/FOLDER CONVENTIONS
+──────────────────────────────────────────────────────────────────────────────
+- Keep auth helpers in:
+  - src/lib/auth/authCookies.ts
+  - src/lib/auth/session.ts
+  - src/lib/auth/password.ts (argon2 helpers) if present
+- Prisma client singleton in:
+  - src/lib/db/prisma.ts
+- API routes under:
+  - src/app/api/**/route.ts
+- Prefer small modules and explicit types; no heavy validation libs unless requested.
+
+END
