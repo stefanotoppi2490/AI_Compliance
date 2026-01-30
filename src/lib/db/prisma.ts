@@ -6,19 +6,17 @@ declare global {
 }
 
 function createPrismaClient() {
-  const accelerateUrl = process.env.PRISMA_ACCELERATE_URL;
-  if (!accelerateUrl) {
-    throw new Error("Missing PRISMA_ACCELERATE_URL");
+  // DEV: sempre DATABASE_URL diretto
+  if (process.env.NODE_ENV !== "production") {
+    if (!process.env.DATABASE_URL) throw new Error("Missing DATABASE_URL");
+    return new PrismaClient();
   }
 
-  return new PrismaClient({
-    accelerateUrl,
-    log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
-  });
+  // PROD: Accelerate
+  const accelerateUrl = process.env.PRISMA_ACCELERATE_URL;
+  if (!accelerateUrl) throw new Error("Missing PRISMA_ACCELERATE_URL");
+  return new PrismaClient({ accelerateUrl });
 }
 
 export const prisma = global.__prisma ?? createPrismaClient();
-
-if (process.env.NODE_ENV !== "production") {
-  global.__prisma = prisma;
-}
+if (process.env.NODE_ENV !== "production") global.__prisma = prisma;
