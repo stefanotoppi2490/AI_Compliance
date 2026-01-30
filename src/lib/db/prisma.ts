@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { PrismaNeon } from "@prisma/adapter-neon";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -6,17 +7,20 @@ declare global {
 }
 
 function createPrismaClient() {
-  // DEV: sempre DATABASE_URL diretto
-  if (process.env.NODE_ENV !== "production") {
-    if (!process.env.DATABASE_URL) throw new Error("Missing DATABASE_URL");
-    return new PrismaClient();
-  }
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("Missing DATABASE_URL");
 
-  // PROD: Accelerate
-  const accelerateUrl = process.env.PRISMA_ACCELERATE_URL;
-  if (!accelerateUrl) throw new Error("Missing PRISMA_ACCELERATE_URL");
-  return new PrismaClient({ accelerateUrl });
+  // ✅ adapter costruito dalla connection string (compatibile con le versioni che non accettano Pool)
+  const adapter = new PrismaNeon({ connectionString: url });
+
+  return new PrismaClient({
+    adapter,
+    log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
+  });
 }
 
 export const prisma = global.__prisma ?? createPrismaClient();
-if (process.env.NODE_ENV !== "production") global.__prisma = prisma;
+
+if (process.env.NODE_ENV !== "production") {
+  global.__prisma = prisma;
+}
