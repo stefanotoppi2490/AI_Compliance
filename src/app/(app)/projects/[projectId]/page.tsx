@@ -14,6 +14,15 @@ type Doc = {
   createdAt: string;
 };
 
+type RiskItem = { id: string; createdAt: string; result: any; inputMeta?: any };
+
+type ScopeCheckItem = {
+  id: string;
+  createdAt: string;
+  request: string;
+  result: any;
+};
+
 export default function ProjectDetailPage({
   params,
 }: {
@@ -25,6 +34,9 @@ export default function ProjectDetailPage({
   const [fileErr, setFileErr] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
+  const [scopeReq, setScopeReq] = useState("");
+
+  // ---- Documents (GET)
   const docsQuery = useQuery({
     queryKey: ["project-documents", projectId],
     queryFn: async () =>
@@ -36,6 +48,7 @@ export default function ProjectDetailPage({
   const docs = docsQuery.data?.documents ?? [];
   const activeDoc = useMemo(() => docs.find((d) => d.isActive) ?? null, [docs]);
 
+  // ---- Documents (POST)
   const createDocMutation = useMutation({
     mutationFn: async (payload: {
       originalName: string;
@@ -54,6 +67,8 @@ export default function ProjectDetailPage({
       await qc.invalidateQueries({
         queryKey: ["project-documents", projectId],
       });
+      await qc.invalidateQueries({ queryKey: ["risk-history", projectId] });
+      await qc.invalidateQueries({ queryKey: ["scope-history", projectId] });
     },
   });
 
@@ -85,7 +100,7 @@ export default function ProjectDetailPage({
         file,
         {
           access: "public",
-          handleUploadUrl: "/api/blob/upload", // endpoint standard vercel blob
+          handleUploadUrl: "/api/blob/upload",
         },
       );
 
@@ -102,16 +117,67 @@ export default function ProjectDetailPage({
     }
   }
 
+  // ---- Risk history
+  const riskHistoryQuery = useQuery({
+    queryKey: ["risk-history", projectId],
+    queryFn: async () =>
+      clientFetch<{ ok: true; items: RiskItem[] }>(
+        `/api/projects/${projectId}/risk-analysis`,
+      ),
+  });
+
+  // ---- Scope history
+  const scopeHistoryQuery = useQuery({
+    queryKey: ["scope-history", projectId],
+    queryFn: async () =>
+      clientFetch<{ ok: true; items: ScopeCheckItem[] }>(
+        `/api/projects/${projectId}/scope-check`,
+      ),
+  });
+
+  // ---- Run risk
+  const riskMutation = useMutation({
+    mutationFn: async () =>
+      clientFetch<{ ok: true; item: RiskItem }>(
+        `/api/projects/${projectId}/risk-analysis`,
+        { method: "POST" },
+      ),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["risk-history", projectId] });
+    },
+  });
+
+  // ---- Run scope check
+  const scopeMutation = useMutation({
+    mutationFn: async () =>
+      clientFetch<{ ok: true; item: ScopeCheckItem }>(
+        `/api/projects/${projectId}/scope-check`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ request: scopeReq }),
+        },
+      ),
+    onSuccess: async () => {
+      setScopeReq("");
+      await qc.invalidateQueries({ queryKey: ["scope-history", projectId] });
+    },
+  });
+
+  const latestRisk = riskHistoryQuery.data?.items?.[0] ?? null;
+  const latestScope = scopeHistoryQuery.data?.items?.[0] ?? null;
+
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-xl font-extrabold tracking-tight text-zinc-900">
             Dettaglio progetto
           </div>
           <div className="mt-1 text-sm text-zinc-500">
-            Carica un solo preventivo attivo (PDF/DOCX). Poi faremo Risk
-            Analysis e Scope Check.
+            Carica un solo preventivo attivo (PDF/DOCX). Poi fai Risk Analysis e
+            Scope Check.
           </div>
         </div>
 
@@ -167,7 +233,8 @@ export default function ProjectDetailPage({
                 </div>
                 <div className="mt-1 text-xs text-zinc-500">
                   {new Date(activeDoc.createdAt).toLocaleString("it-IT")} •{" "}
-                  {activeDoc.mimeType}
+                  {activeDoc.mimeType} •{" "}
+                  <span className="font-semibold">attivo</span>
                 </div>
               </div>
               <a
@@ -183,7 +250,133 @@ export default function ProjectDetailPage({
         </div>
       </div>
 
-      {/* Storico */}
+      {/* ACTIONS: Risk + Scope */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Risk */}
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+          <div>
+            <div className="text-sm font-semibold text-zinc-900">
+              Contract Risk Analysis
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              Analizza criticità, rischi e suggerimenti (salvato nello storico).
+            </div>
+          </div>
+
+          <button
+            disabled={!activeDoc || riskMutation.isPending}
+            onClick={() => riskMutation.mutate()}
+            className="mt-4 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {riskMutation.isPending ? "Analisi..." : "Esegui Risk Analysis"}
+          </button>
+
+          {riskMutation.isError && (
+            <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {(riskMutation.error as Error).message}
+            </div>
+          )}
+
+          {latestRisk && (
+            <JsonCard
+              title="Ultimo risultato"
+              createdAt={latestRisk.createdAt}
+              data={latestRisk.result}
+            />
+          )}
+        </div>
+
+        {/* Scope */}
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+          <div>
+            <div className="text-sm font-semibold text-zinc-900">
+              Scope Check
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              Incolla una richiesta del cliente e verifica se è in scope.
+            </div>
+          </div>
+
+          <textarea
+            value={scopeReq}
+            onChange={(e) => setScopeReq(e.target.value)}
+            placeholder="Es: login email/password senza social è incluso?"
+            className="mt-4 h-24 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm outline-none focus:border-zinc-400"
+          />
+
+          <button
+            disabled={
+              !activeDoc ||
+              scopeMutation.isPending ||
+              scopeReq.trim().length < 6
+            }
+            onClick={() => scopeMutation.mutate()}
+            className="mt-3 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {scopeMutation.isPending ? "Check..." : "Verifica richiesta"}
+          </button>
+
+          {scopeMutation.isError && (
+            <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {(scopeMutation.error as Error).message}
+            </div>
+          )}
+
+          {latestScope && (
+            <JsonCard
+              title={`Ultimo risultato (${latestScope.result?.verdict ?? "?"})`}
+              createdAt={latestScope.createdAt}
+              data={{ request: latestScope.request, ...latestScope.result }}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* HISTORIES: Risk + Scope */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <HistoryList
+          title="Storico Risk Analysis (ultimi 20)"
+          loading={riskHistoryQuery.isLoading}
+          items={riskHistoryQuery.data?.items ?? []}
+          renderItem={(it: any) => (
+            <div className="space-y-2">
+              <div className="text-xs text-zinc-500">
+                {new Date(it.createdAt).toLocaleString("it-IT")}
+              </div>
+              <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-800">
+                <div className="font-semibold">Summary</div>
+                <div className="mt-1 line-clamp-3">
+                  {typeof it.result?.summary === "string"
+                    ? it.result.summary
+                    : "—"}
+                </div>
+              </div>
+            </div>
+          )}
+        />
+
+        <HistoryList
+          title="Storico Scope Check (ultimi 20)"
+          loading={scopeHistoryQuery.isLoading}
+          items={scopeHistoryQuery.data?.items ?? []}
+          renderItem={(it: any) => (
+            <div className="space-y-1">
+              <div className="text-xs text-zinc-500">
+                {new Date(it.createdAt).toLocaleString("it-IT")}
+              </div>
+              <div className="text-sm text-zinc-900">{it.request}</div>
+              <div className="text-xs font-semibold text-zinc-700">
+                {it.result?.verdict ?? "?"}
+                {typeof it.result?.confidence === "number"
+                  ? ` • conf ${it.result.confidence.toFixed(2)}`
+                  : ""}
+              </div>
+            </div>
+          )}
+        />
+      </div>
+
+      {/* Storico Upload */}
       <div className="rounded-2xl border border-zinc-200 bg-white">
         <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3">
           <div className="text-sm font-semibold text-zinc-900">
@@ -228,6 +421,68 @@ export default function ProjectDetailPage({
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ----------------- UI Helpers ----------------- */
+
+function JsonCard({
+  title,
+  createdAt,
+  data,
+}: {
+  title: string;
+  createdAt: string;
+  data: any;
+}) {
+  return (
+    <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-sm font-semibold text-zinc-900">{title}</div>
+        <div className="text-xs text-zinc-500">
+          {new Date(createdAt).toLocaleString("it-IT")}
+        </div>
+      </div>
+      <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-800">
+        {JSON.stringify(data, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
+function HistoryList<T>({
+  title,
+  loading,
+  items,
+  renderItem,
+}: {
+  title: string;
+  loading: boolean;
+  items: T[];
+  renderItem: (it: T) => React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-zinc-200 bg-white">
+      <div className="border-b border-zinc-100 px-4 py-3">
+        <div className="text-sm font-semibold text-zinc-900">{title}</div>
+      </div>
+
+      {loading ? (
+        <div className="p-4">
+          <div className="h-20 animate-pulse rounded-xl bg-zinc-100" />
+        </div>
+      ) : items.length === 0 ? (
+        <div className="p-6 text-sm text-zinc-500">Nessun elemento.</div>
+      ) : (
+        <ul className="divide-y divide-zinc-100">
+          {(items as any[]).slice(0, 20).map((it) => (
+            <li key={it.id} className="px-4 py-3">
+              {renderItem(it as any)}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
