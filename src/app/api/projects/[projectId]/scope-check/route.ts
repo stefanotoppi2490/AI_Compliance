@@ -1,20 +1,59 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { requireUser } from "@/lib/auth/requireUser";
-import { getActiveDocument } from "@/lib/projects/getActiveDocument";
+import { openai } from "@/lib/openai/client";
+import { extractJson } from "@/lib/ai/safeJson";
 
-const Body = z.object({
-  request: z.string().min(6),
-});
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ projectId: string }> },
+) {
+  const { projectId } = await params;
+  const user = await requireUser();
+
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, ownerId: user.id },
+    select: { id: true },
+  });
+
+  if (!project) {
+    return NextResponse.json(
+      { ok: false, error: "Not found" },
+      { status: 404 },
+    );
+  }
+
+  const items = await prisma.scopeCheck.findMany({
+    where: { projectId },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: {
+      id: true,
+      createdAt: true,
+      request: true,
+      result: true,
+    },
+  });
+
+  return NextResponse.json({ ok: true, items });
+}
 
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
+  const { projectId } = await params;
   const user = await requireUser();
 
-  const { projectId } = await params;
+  const body = await req.json().catch(() => null);
+  const requestText = body?.request?.trim();
+  if (!requestText || requestText.length < 10) {
+    return NextResponse.json(
+      { ok: false, error: "Request too short" },
+      { status: 400 },
+    );
+  }
+
   const project = await prisma.project.findFirst({
     where: { id: projectId, ownerId: user.id },
     select: { id: true },
@@ -25,93 +64,78 @@ export async function POST(
       { status: 404 },
     );
 
-  const doc = await getActiveDocument(project.id);
+  const doc = await prisma.document.findFirst({
+    where: { projectId, isActive: true },
+  });
   if (!doc)
     return NextResponse.json(
       { ok: false, error: "No active document" },
       { status: 400 },
     );
 
-  if (doc.status !== "AI_READY") {
+  if (doc.status !== "AI_READY" || !doc.vectorStoreId) {
     return NextResponse.json(
       { ok: false, error: `Document not AI_READY (${doc.status})` },
       { status: 400 },
     );
   }
 
-  const json = await req.json().catch(() => null);
-  const parsed = Body.safeParse(json);
-  if (!parsed.success)
+  const prompt = `
+You are a senior contract analyst.
+
+Client request:
+"${requestText}"
+
+Using ONLY the contract/quote content, decide:
+
+Return ONLY valid JSON (no markdown, no backticks):
+{
+  "verdict": "IN_SCOPE" | "OUT_OF_SCOPE" | "UNCLEAR",
+  "confidence": 0.0,
+  "reasons": [
+    { "text": "...", "evidence": "..." }
+  ],
+  "missingInfo": [
+    { "text": "...", "evidence": "..." }
+  ],
+  "suggestedReply": "short email reply"
+}
+
+Rules:
+- If not explicitly covered, prefer OUT_OF_SCOPE.
+- If boundaries missing, use UNCLEAR and ask targeted questions.
+- Evidence must include relevant clause text in "evidence".
+`;
+
+  const resp = await openai.responses.create({
+    model: "gpt-4o-mini",
+    input: prompt,
+    tools: [
+      {
+        type: "file_search",
+        vector_store_ids: [doc.vectorStoreId],
+        max_num_results: 8,
+      } as any,
+    ],
+  });
+
+  const raw = resp.output_text?.trim();
+  if (!raw)
     return NextResponse.json(
-      { ok: false, error: "Invalid body" },
-      { status: 400 },
+      { ok: false, error: "Empty AI response" },
+      { status: 500 },
     );
 
-  // ✅ STUB (poi OpenAI)
-  const lower = parsed.data.request.toLowerCase();
-  const verdict =
-    lower.includes("login") && lower.includes("social")
-      ? "UNCLEAR"
-      : lower.includes("hosting") || lower.includes("manutenzione")
-        ? "OUT_OF_SCOPE"
-        : "UNCLEAR";
+  const parsed = extractJson(raw);
 
-  const result = {
-    verdict,
-    confidence: 0.55,
-    reasons: [
-      { text: "Risultato stub: non AI.", chunk: 0 },
-      { text: `Documento attivo: ${doc.originalName}`, chunk: 0 },
-    ],
-    missingInfo:
-      verdict === "UNCLEAR"
-        ? [
-            {
-              text: "Il preventivo non specifica modalità di login/registrazione.",
-              chunk: 0,
-            },
-          ]
-        : [],
-    suggestedReply:
-      verdict === "OUT_OF_SCOPE"
-        ? "La richiesta non risulta inclusa nel preventivo attuale. Possiamo stimarla come extra (change request)."
-        : "Per confermare se è incluso, serve chiarire: sono previsti login/registrazione? con quali metodi (email/password, SSO)?",
-  };
-
-  const saved = await prisma.scopeCheck.create({
+  const item = await prisma.scopeCheck.create({
     data: {
-      projectId: project.id,
+      projectId,
       documentId: doc.id,
-      request: parsed.data.request,
-      result,
+      request: requestText,
+      result: parsed,
     },
   });
 
-  return NextResponse.json({ ok: true, item: saved });
-}
-
-export async function GET(
-  _req: Request,
-  { params }: { params: Promise<{ projectId: string }> },
-) {
-  const user = await requireUser();
-
-  const { projectId } = await params;
-  const project = await prisma.project.findFirst({
-    where: { id: projectId, ownerId: user.id },
-    select: { id: true },
-  });
-  if (!project)
-    return NextResponse.json(
-      { ok: false, error: "Not found" },
-      { status: 404 },
-    );
-
-  const items = await prisma.scopeCheck.findMany({
-    where: { projectId: project.id },
-    orderBy: { createdAt: "desc" },
-    take: 20,
-  });
-
-  return NextResponse.json({ ok: true, items });
+  return NextResponse.json({ ok: true, item });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useMemo, useState } from "react";
+import React, { use, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { clientFetch } from "@/lib/http/clientFetch";
 import { upload } from "@vercel/blob/client";
@@ -12,6 +12,9 @@ type Doc = {
   blobUrl: string;
   isActive: boolean;
   createdAt: string;
+  status?: "UPLOADED" | "AI_READY" | "ERROR";
+  openaiFileId?: string | null;
+  vectorStoreId?: string | null;
 };
 
 type RiskItem = { id: string; createdAt: string; result: any; inputMeta?: any };
@@ -23,6 +26,23 @@ type ScopeCheckItem = {
   result: any;
 };
 
+function StatusBadge({ status }: { status?: string }) {
+  const s = status ?? "UPLOADED";
+  const cls =
+    s === "AI_READY"
+      ? "bg-emerald-100 text-emerald-700"
+      : s === "ERROR"
+        ? "bg-red-100 text-red-700"
+        : "bg-zinc-100 text-zinc-700";
+  const label =
+    s === "AI_READY" ? "AI_READY" : s === "ERROR" ? "ERROR" : "UPLOADED";
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
 export default function ProjectDetailPage({
   params,
 }: {
@@ -33,7 +53,6 @@ export default function ProjectDetailPage({
 
   const [fileErr, setFileErr] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-
   const [scopeReq, setScopeReq] = useState("");
 
   // ---- Documents (GET)
@@ -48,7 +67,11 @@ export default function ProjectDetailPage({
   const docs = docsQuery.data?.documents ?? [];
   const activeDoc = useMemo(() => docs.find((d) => d.isActive) ?? null, [docs]);
 
-  // ---- Documents (POST)
+  const isReady = !!activeDoc && activeDoc.status === "AI_READY";
+  const isErrored = !!activeDoc && activeDoc.status === "ERROR";
+  const isUploaded = !!activeDoc && activeDoc.status === "UPLOADED";
+
+  // ---- Create Document (POST)
   const createDocMutation = useMutation({
     mutationFn: async (payload: {
       originalName: string;
@@ -69,6 +92,20 @@ export default function ProjectDetailPage({
       });
       await qc.invalidateQueries({ queryKey: ["risk-history", projectId] });
       await qc.invalidateQueries({ queryKey: ["scope-history", projectId] });
+    },
+  });
+
+  // ---- Prepare active doc (OpenAI file + VectorStore + poll -> AI_READY)
+  const prepareMutation = useMutation({
+    mutationFn: async (documentId: string) =>
+      clientFetch<{ ok: true; document: Doc }>(
+        `/api/projects/${projectId}/documents/${documentId}/prepare`,
+        { method: "POST" },
+      ),
+    onSuccess: async () => {
+      await qc.invalidateQueries({
+        queryKey: ["project-documents", projectId],
+      });
     },
   });
 
@@ -93,8 +130,9 @@ export default function ProjectDetailPage({
     }
 
     setUploading(true);
+
     try {
-      // Upload diretto a Vercel Blob
+      // 1) Upload diretto a Vercel Blob
       const blob = await upload(
         `projects/${projectId}/${Date.now()}_${file.name}`.replaceAll(" ", "_"),
         file,
@@ -104,12 +142,22 @@ export default function ProjectDetailPage({
         },
       );
 
-      // Salva su DB (disattiva altri, 1 attivo)
-      await createDocMutation.mutateAsync({
+      // 2) Crea Document su DB (disattiva altri, 1 attivo)
+      const created = await createDocMutation.mutateAsync({
         originalName: file.name,
         mimeType: file.type,
         blobUrl: blob.url,
       });
+
+      const newDocId = created?.document?.id;
+      if (!newDocId) throw new Error("Document create failed (missing id)");
+
+      // 3) Prepare: upload OpenAI + vector store + poll -> AI_READY
+      await prepareMutation.mutateAsync(newDocId);
+
+      // 4) refresh histories (opzionale)
+      await qc.invalidateQueries({ queryKey: ["risk-history", projectId] });
+      await qc.invalidateQueries({ queryKey: ["scope-history", projectId] });
     } catch (e) {
       setFileErr((e as Error).message || "Upload failed");
     } finally {
@@ -167,6 +215,9 @@ export default function ProjectDetailPage({
   const latestRisk = riskHistoryQuery.data?.items?.[0] ?? null;
   const latestScope = scopeHistoryQuery.data?.items?.[0] ?? null;
 
+  const uploadDisabled =
+    uploading || createDocMutation.isPending || prepareMutation.isPending;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -176,8 +227,9 @@ export default function ProjectDetailPage({
             Dettaglio progetto
           </div>
           <div className="mt-1 text-sm text-zinc-500">
-            Carica un solo preventivo attivo (PDF/DOCX). Poi fai Risk Analysis e
-            Scope Check.
+            Carica un preventivo (PDF/DOCX). Il sistema lo prepara
+            (OpenAI+Vector Store) e poi puoi eseguire Risk Analysis e Scope
+            Check.
           </div>
         </div>
 
@@ -201,14 +253,18 @@ export default function ProjectDetailPage({
             </div>
           </div>
 
-          <label className="cursor-pointer rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800">
-            {uploading ? "Caricamento..." : "Carica file"}
+          <label
+            className={`cursor-pointer rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 ${uploadDisabled ? "opacity-50 pointer-events-none" : ""}`}
+          >
+            {uploading || prepareMutation.isPending
+              ? "Preparazione..."
+              : "Carica file"}
             <input
               type="file"
               className="hidden"
               accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
-              disabled={uploading}
+              disabled={uploadDisabled}
             />
           </label>
         </div>
@@ -227,27 +283,65 @@ export default function ProjectDetailPage({
             </div>
           ) : (
             <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-zinc-900">
-                  {activeDoc.originalName}
+              <div className="min-w-0 space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="truncate text-sm font-semibold text-zinc-900">
+                    {activeDoc.originalName}
+                  </div>
+                  <StatusBadge status={activeDoc.status} />
                 </div>
-                <div className="mt-1 text-xs text-zinc-500">
+
+                <div className="text-xs text-zinc-500">
                   {new Date(activeDoc.createdAt).toLocaleString("it-IT")} •{" "}
                   {activeDoc.mimeType} •{" "}
                   <span className="font-semibold">attivo</span>
                 </div>
+
+                {isUploaded && (
+                  <div className="text-xs text-zinc-600">
+                    In preparazione: upload su OpenAI + indicizzazione…
+                  </div>
+                )}
+
+                {isErrored && (
+                  <div className="text-xs text-red-700">
+                    Preparazione fallita. Premi “Riprova preparazione”.
+                  </div>
+                )}
               </div>
-              <a
-                href={activeDoc.blobUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-50"
-              >
-                Apri
-              </a>
+
+              <div className="flex items-center gap-2">
+                <a
+                  href={activeDoc.blobUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-50"
+                >
+                  Apri
+                </a>
+
+                {activeDoc && activeDoc.status !== "AI_READY" && (
+                  <button
+                    type="button"
+                    disabled={prepareMutation.isPending}
+                    onClick={() => prepareMutation.mutate(activeDoc.id)}
+                    className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
+                  >
+                    {prepareMutation.isPending
+                      ? "Preparando..."
+                      : "Riprova preparazione"}
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
+
+        {prepareMutation.isError && (
+          <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {(prepareMutation.error as Error).message}
+          </div>
+        )}
       </div>
 
       {/* ACTIONS: Risk + Scope */}
@@ -259,16 +353,21 @@ export default function ProjectDetailPage({
               Contract Risk Analysis
             </div>
             <div className="mt-1 text-xs text-zinc-500">
-              Analizza criticità, rischi e suggerimenti (salvato nello storico).
+              Analizza criticità e rischi (salvato nello storico). Richiede
+              documento AI_READY.
             </div>
           </div>
 
           <button
-            disabled={!activeDoc || riskMutation.isPending}
+            disabled={!isReady || riskMutation.isPending}
             onClick={() => riskMutation.mutate()}
             className="mt-4 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
           >
-            {riskMutation.isPending ? "Analisi..." : "Esegui Risk Analysis"}
+            {!isReady
+              ? "Documento non pronto (AI_READY richiesto)"
+              : riskMutation.isPending
+                ? "Analisi..."
+                : "Esegui Risk Analysis"}
           </button>
 
           {riskMutation.isError && (
@@ -279,9 +378,9 @@ export default function ProjectDetailPage({
 
           {latestRisk && (
             <JsonCard
-              title="Ultimo risultato"
+              title="Ultimo Risk Analysis"
               createdAt={latestRisk.createdAt}
-              data={latestRisk.result}
+              result={latestRisk.result}
             />
           )}
         </div>
@@ -294,6 +393,7 @@ export default function ProjectDetailPage({
             </div>
             <div className="mt-1 text-xs text-zinc-500">
               Incolla una richiesta del cliente e verifica se è in scope.
+              Richiede documento AI_READY.
             </div>
           </div>
 
@@ -301,19 +401,22 @@ export default function ProjectDetailPage({
             value={scopeReq}
             onChange={(e) => setScopeReq(e.target.value)}
             placeholder="Es: login email/password senza social è incluso?"
-            className="mt-4 h-24 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm outline-none focus:border-zinc-400"
+            className="mt-4 h-24 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm outline-none focus:border-zinc-400 text-black"
+            disabled={!isReady}
           />
 
           <button
             disabled={
-              !activeDoc ||
-              scopeMutation.isPending ||
-              scopeReq.trim().length < 6
+              !isReady || scopeMutation.isPending || scopeReq.trim().length < 6
             }
             onClick={() => scopeMutation.mutate()}
             className="mt-3 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
           >
-            {scopeMutation.isPending ? "Check..." : "Verifica richiesta"}
+            {!isReady
+              ? "Documento non pronto (AI_READY richiesto)"
+              : scopeMutation.isPending
+                ? "Check..."
+                : "Verifica richiesta"}
           </button>
 
           {scopeMutation.isError && (
@@ -326,7 +429,10 @@ export default function ProjectDetailPage({
             <JsonCard
               title={`Ultimo risultato (${latestScope.result?.verdict ?? "?"})`}
               createdAt={latestScope.createdAt}
-              data={{ request: latestScope.request, ...latestScope.result }}
+              result={{
+                reportMarkdown: `Richiesta: ${latestScope.request}\nVerdict: ${latestScope.result?.verdict ?? "?"}`,
+                data: { request: latestScope.request, ...latestScope.result },
+              }}
             />
           )}
         </div>
@@ -398,15 +504,24 @@ export default function ProjectDetailPage({
             {docs.map((d) => (
               <li key={d.id} className="px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold text-zinc-900">
-                      {d.originalName}
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <div className="truncate text-sm font-semibold text-zinc-900">
+                        {d.originalName}
+                      </div>
+                      <StatusBadge status={d.status} />
+                      {d.isActive ? (
+                        <span className="rounded-full bg-zinc-900 px-2 py-0.5 text-xs font-semibold text-white">
+                          attivo
+                        </span>
+                      ) : null}
                     </div>
-                    <div className="mt-1 text-xs text-zinc-500">
+
+                    <div className="text-xs text-zinc-500">
                       {new Date(d.createdAt).toLocaleString("it-IT")}
-                      {d.isActive ? " • attivo" : ""}
                     </div>
                   </div>
+
                   <a
                     href={d.blobUrl}
                     target="_blank"
@@ -430,23 +545,53 @@ export default function ProjectDetailPage({
 function JsonCard({
   title,
   createdAt,
-  data,
+  result,
 }: {
   title: string;
   createdAt: string;
-  data: any;
+  result: {
+    reportMarkdown?: string;
+    data?: any;
+  };
 }) {
+  const [showRaw, setShowRaw] = useState(false);
+
   return (
     <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
+      {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="text-sm font-semibold text-zinc-900">{title}</div>
         <div className="text-xs text-zinc-500">
           {new Date(createdAt).toLocaleString("it-IT")}
         </div>
       </div>
-      <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-800">
-        {JSON.stringify(data, null, 2)}
-      </pre>
+
+      {/* ✅ REPORT UMANO */}
+      {result?.reportMarkdown && (
+        <div className="prose prose-sm mt-4 max-w-none text-zinc-800">
+          {result.reportMarkdown.split("\n").map((line, i) => (
+            <p key={i}>{line}</p>
+          ))}
+        </div>
+      )}
+
+      {/* Toggle JSON */}
+      {result?.data && (
+        <div className="mt-4">
+          <button
+            onClick={() => setShowRaw((v) => !v)}
+            className="text-xs font-semibold text-zinc-600 hover:text-zinc-900"
+          >
+            {showRaw ? "Nascondi dettagli tecnici" : "Mostra dettagli tecnici"}
+          </button>
+
+          {showRaw && (
+            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-800">
+              {JSON.stringify(result.data, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
     </div>
   );
 }

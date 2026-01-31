@@ -61,7 +61,9 @@ model Document {
   blobUrl      String
 
   // opzionale: cache se vuoi ricaricare meno volte su OpenAI
-  openaiFileId String?
+  openaiFileId     String?
+  vectorStoreId    String?
+  vectorStoreFileId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

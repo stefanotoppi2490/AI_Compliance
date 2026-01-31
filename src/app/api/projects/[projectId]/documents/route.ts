@@ -8,6 +8,43 @@ const ALLOWED_MIME = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
 
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ projectId: string }> },
+) {
+  const { projectId } = await params;
+  const user = await requireUser();
+
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, ownerId: user.id },
+    select: { id: true },
+  });
+
+  if (!project) {
+    return NextResponse.json(
+      { ok: false, error: "Not found" },
+      { status: 404 },
+    );
+  }
+
+  const documents = await prisma.document.findMany({
+    where: { projectId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      originalName: true,
+      mimeType: true,
+      blobUrl: true,
+      isActive: true,
+      createdAt: true,
+      status: true,
+      openaiFileId: true,
+    },
+  });
+
+  return NextResponse.json({ ok: true, documents });
+}
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ projectId: string }> },
@@ -16,9 +53,10 @@ export async function POST(
   const user = await requireUser();
 
   const body = await req.json().catch(() => null);
-  const originalName = body?.originalName;
-  const mimeType = body?.mimeType;
-  const blobUrl = body?.blobUrl;
+  const originalName =
+    typeof body?.originalName === "string" ? body.originalName : "";
+  const mimeType = typeof body?.mimeType === "string" ? body.mimeType : "";
+  const blobUrl = typeof body?.blobUrl === "string" ? body.blobUrl : "";
 
   if (!originalName || !mimeType || !blobUrl) {
     return NextResponse.json(
@@ -39,6 +77,7 @@ export async function POST(
     where: { id: projectId, ownerId: user.id },
     select: { id: true },
   });
+
   if (!project) {
     return NextResponse.json(
       { ok: false, error: "Not found" },
@@ -67,15 +106,14 @@ export async function POST(
 
   // 2) Upload su OpenAI + set AI_READY
   try {
-    // ✅ zero parsing: passiamo direttamente fetch(blobUrl) al SDK
     const fileRes = await fetch(blobUrl);
     if (!fileRes.ok) {
       throw new Error(`Cannot fetch blobUrl (${fileRes.status})`);
     }
 
     const uploaded = await openai.files.create({
-      file: fileRes, // <— supportato dal Node SDK  [oai_citation:2‡GitHub](https://github.com/openai/openai-node?utm_source=chatgpt.com)
-      purpose: "user_data", // raccomandato per file input  [oai_citation:3‡OpenAI](https://platform.openai.com/docs/guides/pdf-files?utm_source=chatgpt.com)
+      file: fileRes,
+      purpose: "user_data",
     });
 
     const updated = await prisma.document.update({
@@ -83,6 +121,16 @@ export async function POST(
       data: {
         openaiFileId: uploaded.id,
         status: "AI_READY",
+      },
+      select: {
+        id: true,
+        originalName: true,
+        mimeType: true,
+        blobUrl: true,
+        isActive: true,
+        createdAt: true,
+        status: true,
+        openaiFileId: true,
       },
     });
 
@@ -93,6 +141,16 @@ export async function POST(
     const updated = await prisma.document.update({
       where: { id: doc.id },
       data: { status: "ERROR" },
+      select: {
+        id: true,
+        originalName: true,
+        mimeType: true,
+        blobUrl: true,
+        isActive: true,
+        createdAt: true,
+        status: true,
+        openaiFileId: true,
+      },
     });
 
     return NextResponse.json(
