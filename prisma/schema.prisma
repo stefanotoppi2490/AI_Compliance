@@ -38,9 +38,48 @@ model Project {
   userId    String
   name      String
   createdAt DateTime @default(now())
+  documents Document[]
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@unique([userId, name])
+}
+
+model Document {
+  id          String   @id @default(cuid())
+  projectId   String
+  filename    String
+  blobUrl     String
+  contentType String
+  size        Int
+  createdAt   DateTime @default(now())
+  text   DocumentText?
+  chunks DocumentChunk[]
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model DocumentText {
+  id         String   @id @default(cuid())
+  documentId String   @unique
+  text       String
+  createdAt  DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+}
+
+model DocumentChunk {
+  id         String   @id @default(cuid())
+  documentId String
+  idx        Int
+  text       String
+  createdAt  DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@unique([documentId, idx])
 }
