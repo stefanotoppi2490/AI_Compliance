@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { requireUser } from "@/lib/auth/requireUser";
 import { openai } from "@/lib/openai/client";
-import { extractJson } from "@/lib/ai/safeJson";
+import { getResponseText } from "@/lib/ai/getResponseText";
 
 export async function GET(
   _req: Request,
@@ -27,16 +27,55 @@ export async function GET(
     where: { projectId },
     orderBy: { createdAt: "desc" },
     take: 20,
-    select: {
-      id: true,
-      createdAt: true,
-      request: true,
-      result: true,
-    },
+    select: { id: true, createdAt: true, request: true, result: true },
   });
 
   return NextResponse.json({ ok: true, items });
 }
+
+const SCOPE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "verdict",
+    "confidence",
+    "markdown",
+    "reasons",
+    "missingInfo",
+    "suggestedReply",
+  ],
+  properties: {
+    verdict: { type: "string", enum: ["IN_SCOPE", "OUT_OF_SCOPE", "UNCLEAR"] },
+    confidence: { type: "number" },
+    // ✅ questo è quello che mostri "sopra"
+    markdown: { type: "string" },
+    reasons: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text", "evidence"],
+        properties: {
+          text: { type: "string" },
+          evidence: { type: "string" },
+        },
+      },
+    },
+    missingInfo: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text", "evidence"],
+        properties: {
+          text: { type: "string" },
+          evidence: { type: "string" },
+        },
+      },
+    },
+    suggestedReply: { type: "string" },
+  },
+} as const;
 
 export async function POST(
   req: Request,
@@ -47,6 +86,7 @@ export async function POST(
 
   const body = await req.json().catch(() => null);
   const requestText = body?.request?.trim();
+
   if (!requestText || requestText.length < 10) {
     return NextResponse.json(
       { ok: false, error: "Request too short" },
@@ -58,20 +98,24 @@ export async function POST(
     where: { id: projectId, ownerId: user.id },
     select: { id: true },
   });
-  if (!project)
+  if (!project) {
     return NextResponse.json(
       { ok: false, error: "Not found" },
       { status: 404 },
     );
+  }
 
   const doc = await prisma.document.findFirst({
     where: { projectId, isActive: true },
+    select: { id: true, status: true, vectorStoreId: true },
   });
-  if (!doc)
+
+  if (!doc) {
     return NextResponse.json(
       { ok: false, error: "No active document" },
       { status: 400 },
     );
+  }
 
   if (doc.status !== "AI_READY" || !doc.vectorStoreId) {
     return NextResponse.json(
@@ -80,36 +124,38 @@ export async function POST(
     );
   }
 
-  const prompt = `
-You are a senior contract analyst.
-
-Client request:
-"${requestText}"
-
-Using ONLY the contract/quote content, decide:
-
-Return ONLY valid JSON (no markdown, no backticks):
-{
-  "verdict": "IN_SCOPE" | "OUT_OF_SCOPE" | "UNCLEAR",
-  "confidence": 0.0,
-  "reasons": [
-    { "text": "...", "evidence": "..." }
-  ],
-  "missingInfo": [
-    { "text": "...", "evidence": "..." }
-  ],
-  "suggestedReply": "short email reply"
-}
-
-Rules:
-- If not explicitly covered, prefer OUT_OF_SCOPE.
-- If boundaries missing, use UNCLEAR and ask targeted questions.
-- Evidence must include relevant clause text in "evidence".
-`;
-
   const resp = await openai.responses.create({
     model: "gpt-4o-mini",
-    input: prompt,
+    input: [
+      {
+        role: "system",
+        content:
+          "You are a senior contract analyst. Classify a client request against the uploaded quote/contract. Be strict and avoid assumptions.",
+      },
+      {
+        role: "user",
+        content: `
+  Client request:
+  "${requestText}"
+  
+  Task:
+  Decide IN_SCOPE / OUT_OF_SCOPE / UNCLEAR using ONLY the document content.
+  - If not explicitly covered, prefer OUT_OF_SCOPE.
+  - If boundaries are missing, use UNCLEAR and list the missing info.
+  - Evidence must quote relevant text from the document.
+  
+  Also produce a short, clear Markdown summary for the UI (title + verdict + 2-4 bullets + suggested reply).
+        `.trim(),
+      },
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "scope_check",
+        strict: true,
+        schema: SCOPE_SCHEMA,
+      },
+    },
     tools: [
       {
         type: "file_search",
@@ -119,14 +165,15 @@ Rules:
     ],
   });
 
-  const raw = resp.output_text?.trim();
-  if (!raw)
+  const raw = getResponseText(resp);
+  if (!raw) {
     return NextResponse.json(
       { ok: false, error: "Empty AI response" },
       { status: 500 },
     );
+  }
 
-  const parsed = extractJson(raw);
+  const parsed = JSON.parse(raw);
 
   const item = await prisma.scopeCheck.create({
     data: {

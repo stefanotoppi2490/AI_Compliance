@@ -426,14 +426,26 @@ export default function ProjectDetailPage({
           )}
 
           {latestScope && (
-            <JsonCard
-              title={`Ultimo risultato (${latestScope.result?.verdict ?? "?"})`}
-              createdAt={latestScope.createdAt}
-              result={{
-                reportMarkdown: `Richiesta: ${latestScope.request}\nVerdict: ${latestScope.result?.verdict ?? "?"}`,
-                data: { request: latestScope.request, ...latestScope.result },
-              }}
-            />
+            <>
+              <MarkdownCard
+                title={`Ultimo risultato (${latestScope.result?.verdict ?? "?"})`}
+                createdAt={latestScope.createdAt}
+                markdown={
+                  typeof latestScope.result?.markdown === "string"
+                    ? latestScope.result.markdown
+                    : `**Richiesta:** ${latestScope.request}\n\n**Verdict:** ${latestScope.result?.verdict ?? "?"}`
+                }
+              />
+
+              <JsonCard
+                title="Dettagli tecnici (JSON)"
+                createdAt={latestScope.createdAt}
+                result={{
+                  reportMarkdown: `Richiesta: ${latestScope.request}\nVerdict: ${latestScope.result?.verdict ?? "?"}`,
+                  data: { request: latestScope.request, ...latestScope.result },
+                }}
+              />
+            </>
           )}
         </div>
       </div>
@@ -628,6 +640,30 @@ function HistoryList<T>({
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+function MarkdownCard({
+  title,
+  createdAt,
+  markdown,
+}: {
+  title: string;
+  createdAt: string;
+  markdown: string;
+}) {
+  return (
+    <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-sm font-semibold text-zinc-900">{title}</div>
+        <div className="text-xs text-zinc-500">
+          {new Date(createdAt).toLocaleString("it-IT")}
+        </div>
+      </div>
+      <div className="mt-3 whitespace-pre-wrap rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-800">
+        {markdown}
+      </div>
     </div>
   );
 }
