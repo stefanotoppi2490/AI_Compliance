@@ -1,74 +1,83 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { getCurrentUser } from "@/lib/auth/session";
+import { requireUser } from "@/lib/auth/requireUser";
 
-export const runtime = "nodejs";
+const CreateBody = z.object({
+  originalName: z.string().min(1),
+  mimeType: z.string().min(1),
+  blobUrl: z.string().url(),
+  kind: z.enum(["CONTRACT"]).optional(), // per ora fisso
+});
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ ok: false }, { status: 401 });
+  const user = await requireUser();
 
   const { projectId } = await params;
-  const docs = await prisma.document.findMany({
-    where: {
-      projectId: projectId,
-      project: { userId: user.id },
-    },
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, ownerId: user.id },
+    select: { id: true },
+  });
+  if (!project) {
+    return NextResponse.json(
+      { ok: false, error: "Not found" },
+      { status: 404 },
+    );
+  }
+
+  const documents = await prisma.document.findMany({
+    where: { projectId: project.id },
     orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      filename: true,
-      createdAt: true,
-      text: { select: { id: true } }, // 👈 basta sapere se esiste
-    },
   });
 
-  return NextResponse.json({
-    ok: true,
-    documents: docs.map((d) => ({
-      id: d.id,
-      filename: d.filename,
-      createdAt: d.createdAt,
-      processed: !!d.text,
-    })),
-  });
+  return NextResponse.json({ ok: true, documents });
 }
 
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ ok: false }, { status: 401 });
+  const user = await requireUser();
 
   const { projectId } = await params;
-  const body = await req.json().catch(() => null);
-  if (!body?.blobUrl || !body?.filename) {
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, ownerId: user.id },
+    select: { id: true },
+  });
+  if (!project) {
     return NextResponse.json(
-      { ok: false, message: "Dati mancanti" },
+      { ok: false, error: "Not found" },
+      { status: 404 },
+    );
+  }
+
+  const json = await req.json().catch(() => null);
+  const parsed = CreateBody.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { ok: false, error: "Invalid body" },
       { status: 400 },
     );
   }
 
-  // ownership check
-  const project = await prisma.project.findFirst({
-    where: { id: projectId, userId: user.id },
-    select: { id: true },
+  // 1 solo attivo
+  await prisma.document.updateMany({
+    where: { projectId: project.id, isActive: true },
+    data: { isActive: false },
   });
-  if (!project) {
-    return NextResponse.json({ ok: false }, { status: 404 });
-  }
 
   const doc = await prisma.document.create({
     data: {
       projectId: project.id,
-      filename: body.filename,
-      blobUrl: body.blobUrl,
-      contentType: body.contentType ?? "application/octet-stream",
-      size: body.size ?? 0,
+      kind: "CONTRACT",
+      status: "AI_READY", // ✅ pronto per AI (hai già status)
+      originalName: parsed.data.originalName,
+      mimeType: parsed.data.mimeType,
+      blobUrl: parsed.data.blobUrl,
+      isActive: true,
     },
   });
 

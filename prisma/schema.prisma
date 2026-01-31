@@ -12,97 +12,97 @@ datasource db {
   provider  = "postgresql"
 }
 
-model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  passwordHash String
-  name         String?
-  createdAt    DateTime  @default(now())
-  sessions     Session[]
-  projects     Project[]
+enum DocumentKind {
+  CONTRACT
 }
 
-model Session {
-  id        String   @id @default(cuid())
-  userId    String
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+enum DocumentStatus {
+  UPLOADED
+  AI_READY
+  ERROR
+}
 
-  @@index([userId])
-  @@index([expiresAt])
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String   // bcrypt hash
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects  Project[]
 }
 
 model Project {
   id        String   @id @default(cuid())
-  userId    String
   name      String
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
   createdAt DateTime @default(now())
-  documents Document[]
+  updatedAt DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents     Document[]
+  riskAnalyses  RiskAnalysis[]
+  scopeChecks   ScopeCheck[]
 
-  @@index([userId])
-  @@unique([userId, name])
+  @@index([ownerId])
 }
 
 model Document {
-  id          String   @id @default(cuid())
-  projectId   String
-  filename    String
-  blobUrl     String
-  contentType String
-  size        Int
-  createdAt   DateTime @default(now())
-  text   DocumentText?
-  chunks DocumentChunk[]
-  analysis ScopeAnalysis?
-  requestChecks RequestCheck[]
+  id           String         @id @default(cuid())
+  projectId    String
+  project      Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  kind         DocumentKind   @default(CONTRACT)
+  status       DocumentStatus @default(UPLOADED)
 
-  @@index([projectId])
+  originalName String
+  mimeType     String
+  blobUrl      String
+
+  // opzionale: cache se vuoi ricaricare meno volte su OpenAI
+  openaiFileId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 1 solo “attivo” per progetto: lo gestisci lato logica (o con isActive)
+  isActive   Boolean @default(true)
+
+  riskAnalyses RiskAnalysis[]
+  scopeChecks  ScopeCheck[]
+
+  @@index([projectId, isActive])
 }
 
-model DocumentText {
-  id         String   @id @default(cuid())
-  documentId String   @unique
-  text       String
-  createdAt  DateTime @default(now())
+model RiskAnalysis {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-}
-
-model DocumentChunk {
-  id         String   @id @default(cuid())
   documentId String
-  idx        Int
-  text       String
-  createdAt  DateTime @default(now())
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  inputMeta Json?     // es: {version: "v1", model:"gpt-5"}
+  result    Json      // output JSON dell’AI
+  createdAt DateTime  @default(now())
 
+  @@index([projectId, createdAt])
   @@index([documentId])
-  @@unique([documentId, idx])
 }
 
-model ScopeAnalysis {
-  id         String   @id @default(cuid())
-  documentId String   @unique
-  result     Json
-  createdAt  DateTime @default(now())
+model ScopeCheck {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-}
-
-model RequestCheck {
-  id         String   @id @default(cuid())
   documentId String
-  input      String
-  result     Json
-  createdAt  DateTime @default(now())
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  request   String
+  result    Json
+  createdAt DateTime @default(now())
 
-  @@index([documentId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([documentId])
 }

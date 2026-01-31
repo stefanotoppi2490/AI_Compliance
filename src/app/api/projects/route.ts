@@ -1,56 +1,34 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { getCurrentUser } from "@/lib/auth/session";
+import { requireUser } from "@/lib/auth/requireUser";
 
-export const runtime = "nodejs";
+const CreateBody = z.object({ name: z.string().min(2).max(80) });
 
 export async function GET() {
-  const user = await getCurrentUser();
-  if (!user)
-    return NextResponse.json(
-      { ok: false, message: "Unauthorized" },
-      { status: 401 },
-    );
-
+  const user = await requireUser();
   const projects = await prisma.project.findMany({
-    where: { userId: user.id },
+    where: { ownerId: user.id },
     orderBy: { createdAt: "desc" },
-    select: { id: true, name: true, createdAt: true },
+    select: { id: true, name: true, createdAt: true, updatedAt: true },
   });
-
   return NextResponse.json({ ok: true, projects });
 }
 
 export async function POST(req: Request) {
-  const user = await getCurrentUser();
-  if (!user)
+  const user = await requireUser();
+  const json = await req.json().catch(() => null);
+  const parsed = CreateBody.safeParse(json);
+  if (!parsed.success)
     return NextResponse.json(
-      { ok: false, message: "Unauthorized" },
-      { status: 401 },
-    );
-
-  const body = await req.json().catch(() => null);
-  const name = (body?.name ?? "").toString().trim();
-
-  if (!name || name.length < 2) {
-    return NextResponse.json(
-      { ok: false, message: "Nome progetto non valido." },
+      { ok: false, error: "Invalid body" },
       { status: 400 },
     );
-  }
 
-  try {
-    const project = await prisma.project.create({
-      data: { userId: user.id, name },
-      select: { id: true, name: true, createdAt: true },
-    });
+  const project = await prisma.project.create({
+    data: { ownerId: user.id, name: parsed.data.name.trim() },
+    select: { id: true, name: true, createdAt: true, updatedAt: true },
+  });
 
-    return NextResponse.json({ ok: true, project }, { status: 200 });
-  } catch (e: any) {
-    // unique userId+name
-    return NextResponse.json(
-      { ok: false, message: "Hai già un progetto con questo nome." },
-      { status: 409 },
-    );
-  }
+  return NextResponse.json({ ok: true, project });
 }
