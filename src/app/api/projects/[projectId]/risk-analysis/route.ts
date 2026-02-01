@@ -4,7 +4,7 @@ import { requireUser } from "@/lib/auth/requireUser";
 import { openai } from "@/lib/openai/client";
 import { getResponseText } from "@/lib/ai/getResponseText";
 
-const RISK_DATA_SCHEMA = {
+/*const RISK_DATA_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["overallRisk", "issues", "missingClauses", "notes"],
@@ -46,10 +46,10 @@ const RISK_DATA_SCHEMA = {
     },
     notes: { type: "string" },
   },
-} as const;
+} as const;*/
 
 // ✅ Dual output: reportMarkdown (umano) + data (strutturato)
-const RISK_SCHEMA = {
+/*const RISK_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["reportMarkdown", "data"],
@@ -61,7 +61,7 @@ const RISK_SCHEMA = {
     },
     data: RISK_DATA_SCHEMA,
   },
-} as const;
+} as const;*/
 
 export async function GET(
   _req: Request,
@@ -92,7 +92,7 @@ export async function GET(
   return NextResponse.json({ ok: true, items });
 }
 
-export async function POST(
+/*export async function POST(
   _req: Request,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
@@ -206,6 +206,111 @@ Rules:
       documentId: doc.id,
       inputMeta: { model: "gpt-4o-mini", vectorStoreId: doc.vectorStoreId },
       result: parsed,
+    },
+  });
+
+  return NextResponse.json({ ok: true, item });
+}
+*/
+
+export async function POST(
+  _req: Request,
+  { params }: { params: Promise<{ projectId: string }> },
+) {
+  const { projectId } = await params;
+  const user = await requireUser();
+
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, ownerId: user.id },
+    select: { id: true },
+  });
+  if (!project) {
+    return NextResponse.json(
+      { ok: false, error: "Not found" },
+      { status: 404 },
+    );
+  }
+
+  const doc = await prisma.document.findFirst({
+    where: { projectId, isActive: true },
+    select: { id: true, status: true, vectorStoreId: true },
+  });
+  if (!doc) {
+    return NextResponse.json(
+      { ok: false, error: "No active document" },
+      { status: 400 },
+    );
+  }
+  if (doc.status !== "AI_READY" || !doc.vectorStoreId) {
+    return NextResponse.json(
+      { ok: false, error: `Document not AI_READY (${doc.status})` },
+      { status: 400 },
+    );
+  }
+
+  const resp = await openai.responses.create({
+    model: "gpt-4o-mini",
+    input: [
+      {
+        role: "system",
+        content:
+          "You are a senior contract analyst. Produce a CONTRACT RISK ANALYSIS for the uploaded quote/contract.",
+      },
+      {
+        role: "user",
+        content: `
+Scrivi SOLO in Markdown (niente JSON, niente code fences).
+
+Struttura richiesta:
+# Contract Risk Analysis
+## Valutazione complessiva
+- Rischio: BASSO / MEDIO / ALTO
+- 3 bullet di sintesi
+
+## Problemi principali (max 8)
+Per ogni problema:
+- **Severità**: BASSA / MEDIA / ALTA
+- **Titolo**
+- **Dettaglio**
+- **Prova dal documento**: incolla una frase/pezzo rilevante (o scrivi "Non trovato nel documento")
+- **Clausola suggerita** (testo pronto)
+
+## Clausole mancanti (max 6)
+- Titolo + Perché + Clausola suggerita
+
+## Note finali
+- 2-4 bullet pratici
+
+Regole:
+- Non inventare prove: se non trovi testo, scrivi "Non trovato nel documento".
+- Non fare ricerche infinite: fai al massimo 5 richiami di evidenza.
+        `.trim(),
+      },
+    ],
+    tools: [
+      {
+        type: "file_search",
+        vector_store_ids: [doc.vectorStoreId],
+        max_num_results: 5,
+      } as any,
+    ],
+  });
+
+  const md = (getResponseText(resp) ?? "").trim();
+  if (!md) {
+    return NextResponse.json(
+      { ok: false, error: "Empty AI response" },
+      { status: 500 },
+    );
+  }
+
+  const item = await prisma.riskAnalysis.create({
+    data: {
+      projectId,
+      documentId: doc.id,
+      inputMeta: { model: "gpt-4o-mini", vectorStoreId: doc.vectorStoreId },
+      // ✅ salvo solo markdown (in un JSON minimale)
+      result: { markdown: md },
     },
   });
 

@@ -1,123 +1,180 @@
-# .cursorrules
-# Project: Client Scope Guard (Next.js App Router + Prisma 7 + Neon)
-# Goal: Build a B2B SaaS that checks if client requests are in-scope vs a contract/quote.
-# Current stage: Auth done (register/login/me/logout) + UI login/register/dashboard (Tailwind).
+# Cursor Rules — Contract Scope Guard (MVP)
 
-You are working in a Next.js App Router project (Next 16.1.6) deployed on Vercel.
-Database: Neon Postgres.
-ORM: Prisma 7 with Neon adapter (NO Prisma Accelerate).
-Styling: Tailwind CSS.
+## Project context
+This repo is an MVP web app to upload a quote/contract (PDF/DOCX), run:
+1) Contract Risk Analysis
+2) Scope Check (is a client request in scope?)
 
-Follow these rules strictly.
+Tech:
+- Next.js App Router
+- Tailwind CSS (UI inspired by Velvet template: Spruko Velvet TS)
+- Custom auth (JWT + HttpOnly cookie)
+- Postgres + Prisma
+- Vercel Blob for file storage
+- OpenAI: upload file + create Vector Store + file_search tool
 
-──────────────────────────────────────────────────────────────────────────────
-1) CORE PRINCIPLES
-──────────────────────────────────────────────────────────────────────────────
-- Keep it simple and shippable (MVP-first).
-- Do not refactor unrelated code. Make minimal changes to achieve the requested feature.
-- Prefer server-side auth checks for protected pages (RSC + redirect).
-- All sensitive auth state must remain server-side (HttpOnly session cookie).
+IMPORTANT product constraints:
+- One active document per project (Document.isActive = true)
+- No text extraction, no chunking, no doc parsing pipelines
+- The app passes the document directly to OpenAI through stored `openaiFileId` and/or `vectorStoreId`
+- Risk Analysis and Scope Check results are persisted and shown in UI history
 
-──────────────────────────────────────────────────────────────────────────────
-2) STACK & VERSIONS
-──────────────────────────────────────────────────────────────────────────────
-- Next.js: 16.1.6 (App Router)
-- React: 19
-- Tailwind: v4
-- Prisma: 7.x
-- DB: Neon Postgres
-- Hashing: argon2
+## Golden rules (never break)
+- Never implement multiple alternative architectures. Follow existing patterns only.
+- Do not add additional DB tables unless explicitly requested.
+- Do not introduce background jobs/queues for MVP.
+- Never change route shapes unless asked.
+- All AI outputs must be reliably renderable in UI:
+  - Always include a human-friendly `markdown` (no code fences)
+  - And a structured JSON payload for persistence
+- All API routes must enforce:
+  - user ownership of project
+  - presence of active document
+  - Document.status === AI_READY
+- Never parse PDF/DOCX content locally.
 
-Important Next.js detail:
-- next/headers cookies() is async in this project.
-  Always use: `await cookies()` and `await getSessionIdFromCookie()`.
+## Folder conventions
+Use these paths exactly:
+- `src/app/(auth)/login/page.tsx`
+- `src/app/(auth)/register/page.tsx`
+- `src/app/(app)/dashboard/page.tsx`
+- `src/app/(app)/projects/[projectId]/page.tsx`  (Project detail)
+- `src/app/api/...` for route handlers
+- `src/lib/auth/*` auth utilities
+- `src/lib/openai/*` OpenAI client & helpers
+- `src/lib/http/clientFetch.ts` for client requests
+- `src/lib/db/prisma.ts` Prisma client
 
-──────────────────────────────────────────────────────────────────────────────
-3) DATABASE & PRISMA (IMPORTANT)
-──────────────────────────────────────────────────────────────────────────────
-- Prisma uses Neon adapter in src/lib/db/prisma.ts.
-- Do NOT use Prisma Accelerate or @prisma/extension-accelerate.
-- DATABASE_URL must be the Neon postgresql://... connection string (sslmode=require).
+UI components:
+- Prefer local small components inside the page file for MVP.
+- Use Tailwind classes consistent with Velvet-like design:
+  - rounded-2xl cards
+  - zinc palette
+  - soft borders (`border-zinc-200`)
+  - button styles: black primary / white secondary
 
-PrismaClient creation rule:
-- Always construct PrismaClient with the Neon adapter.
-- Keep a singleton using globalThis in dev.
+## Prisma schema rules
+Models already exist and must remain consistent:
+- User(email unique, password bcrypt hash)
+- Project(ownerId FK)
+- Document(projectId, blobUrl, mimeType, originalName, openaiFileId?, vectorStoreId?, isActive, status)
+- RiskAnalysis(projectId, documentId, inputMeta Json?, result Json)
+- ScopeCheck(projectId, documentId, request string, result Json)
 
-──────────────────────────────────────────────────────────────────────────────
-4) AUTH MODEL (CURRENT IMPLEMENTATION)
-──────────────────────────────────────────────────────────────────────────────
-Auth is session-based with HttpOnly cookies (no JWT in browser).
+When editing relations:
+- Always include both sides of relations (avoid Prisma validation errors)
+- Keep indexes as they are (ownerId index; projectId+createdAt; etc.)
 
-Cookie:
-- Name: csg_session
-- HttpOnly, sameSite=lax, secure in production, path="/"
+## Auth rules
+Auth is custom:
+- JWT stored in HttpOnly cookie
+- `requireUser()` used by API routes
+- If user not authenticated -> return 401 JSON (or redirect on pages)
+- Dashboard and app pages must redirect to login if not authenticated
 
-Tables:
-- User: { id, email(unique), passwordHash, name?, createdAt }
-- Session: { id, userId, createdAt, expiresAt, relation to User }
+Never introduce NextAuth.
 
-Session rules:
-- getCurrentUser() reads cookie -> loads session -> checks expiresAt.
-- If session is expired: delete session best-effort AND clear cookie best-effort.
-- makeSessionExpiry(days=30) returns a Date in the future.
-
+## API design (must match current approach)
 Endpoints:
-- GET  /api/auth/me      -> { ok: true, user: CurrentUser | null }
-- POST /api/auth/register -> creates user + session + sets cookie
-- POST /api/auth/login    -> verifies password + creates session + sets cookie
-- POST /api/auth/logout   -> deletes session best-effort + clears cookie + redirect/login or JSON
+- Documents:
+  - GET  `/api/projects/:projectId/documents` -> list
+  - POST `/api/projects/:projectId/documents` -> create + set AI_READY (upload file to OpenAI + create vector store + attach + poll)
+- Risk:
+  - GET  `/api/projects/:projectId/risk-analysis` -> list latest 20
+  - POST `/api/projects/:projectId/risk-analysis` -> run AI using file_search (vector_store_ids)
+- Scope:
+  - GET  `/api/projects/:projectId/scope-check` -> list latest 20
+  - POST `/api/projects/:projectId/scope-check` -> run AI using file_search (vector_store_ids)
 
-Runtime:
-- All auth routes must run on Node:
-  `export const runtime = "nodejs";`
+Strict enforcement:
+- Each POST must use the active document (`isActive: true`)
+- If doc not AI_READY -> 400 with message `Document not AI_READY (...)`
 
-Security:
-- Never store tokens in localStorage/sessionStorage.
-- Never expose password hashes.
-- Avoid verbose error messages for invalid credentials.
+## OpenAI rules (critical)
+We use OpenAI Node SDK via `openai.responses.create`.
 
-──────────────────────────────────────────────────────────────────────────────
-5) UI & ROUTING
-──────────────────────────────────────────────────────────────────────────────
-Pages:
-- /login      (client component, Tailwind)
-- /register   (client component, Tailwind)
-- /dashboard  (server component, protected; redirects to /login if not authenticated)
+Two valid strategies:
+A) file_search via vector store (preferred because it works with PDF/DOCX after indexing)
+B) direct input_file (but DOCX may fail for context stuffing). Avoid mixing unless required.
 
-UI rules:
-- Use Tailwind utility classes (consistent style with existing pages).
-- Keep design consistent: soft gray background, white card, rounded-3xl, border-zinc-200.
-- No new UI library (shadcn) unless explicitly requested.
+For this app, prefer vector store everywhere for robustness.
 
-Navigation rules:
-- After successful login/register: push "/dashboard" and router.refresh().
+### File preparation flow (must exist)
+When a document is created:
+- fetch(blobUrl)
+- openai.files.create({ file: fetchResponse, purpose: "user_data" })
+- openai.vectorStores.create(...)
+- openai.vectorStores.files.create(vectorStoreId, { file_id })
+- poll until status === "completed"
+- store:
+  - `openaiFileId`
+  - `vectorStoreId`
+  - `vectorStoreFileId` (if present in schema)
+  - set `status = AI_READY`
 
-──────────────────────────────────────────────────────────────────────────────
-6) FUTURE FEATURES (NEXT STEPS) — DO NOT IMPLEMENT UNLESS ASKED
-──────────────────────────────────────────────────────────────────────────────
-Core MVP flow to implement next:
-1) Project CRUD
-2) Document upload (DOCX/PDF) + text extraction
-3) Chunking + storage
-4) Generate Scope Rules (AI)
-5) Check Client Request vs Scope (AI)
-6) History UI
+If anything fails:
+- set `status = ERROR`
+- return 500 with error message
 
-Data fetching rule for business data:
-- Use TanStack Query only when we start Projects/Documents/Checks lists and caching.
-- Auth forms can remain plain fetch() POST.
+### Output formats
+Risk Analysis MUST return strict JSON schema:
+- `reportMarkdown: string` (Italian, headings & bullets, no fences)
+- `data: { overallRisk, issues[], missingClauses[], notes }`
 
-──────────────────────────────────────────────────────────────────────────────
-7) FILE/FOLDER CONVENTIONS
-──────────────────────────────────────────────────────────────────────────────
-- Keep auth helpers in:
-  - src/lib/auth/authCookies.ts
-  - src/lib/auth/session.ts
-  - src/lib/auth/password.ts (argon2 helpers) if present
-- Prisma client singleton in:
-  - src/lib/db/prisma.ts
-- API routes under:
-  - src/app/api/**/route.ts
-- Prefer small modules and explicit types; no heavy validation libs unless requested.
+Scope Check MUST return strict JSON schema:
+- `verdict`
+- `confidence`
+- `markdown` (Italian, readable summary for UI, no fences)
+- `reasons[]` with `evidence`
+- `missingInfo[]` with `evidence`
+- `suggestedReply`
 
-END
+Always use `text.format.json_schema` with `strict: true` when possible.
+
+### Response extraction
+Never rely only on `resp.output_text`.
+Use project helper:
+- `getResponseText(resp)` that aggregates output safely.
+
+## Frontend rules
+Use React Query for all server calls:
+- query keys must be stable and namespaced
+- after mutations, invalidate correct keys
+
+Project Detail page requirements:
+- upload PDF/DOCX to Vercel Blob
+- POST create document
+- show active doc card + upload history
+- Risk card:
+  - button run
+  - render `reportMarkdown` nicely (not JSON dump)
+  - show JSON details collapsed or in a <details>
+- Scope card:
+  - textarea request
+  - render `markdown` nicely
+  - show JSON details collapsed
+
+Rendering markdown:
+- For MVP, render as `<pre>` or simple markdown renderer if already installed.
+- No code fences should appear in stored markdown.
+
+## Error handling
+All API routes:
+- return `{ ok:false, error:"..." }` with proper status codes
+- never leak stack traces to client responses
+- log server-side with `console.error` including `resp.id` when OpenAI fails
+
+Client:
+- show errors in red card
+- disable actions while pending
+- prevent running Risk/Scope if no active document
+
+## What to do when asked to implement a change
+Always follow this checklist:
+1) Identify existing file paths and patterns
+2) Implement minimal change consistent with current architecture
+3) Ensure Prisma relations compile
+4) Ensure routes return correct status codes
+5) Ensure UI invalidates queries correctly
+
+Do not propose big refactors unless asked.

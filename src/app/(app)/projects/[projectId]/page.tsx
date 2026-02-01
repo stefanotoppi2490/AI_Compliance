@@ -4,6 +4,7 @@ import React, { use, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { clientFetch } from "@/lib/http/clientFetch";
 import { upload } from "@vercel/blob/client";
+import { MarkdownReport } from "./MarkdownReport";
 
 type Doc = {
   id: string;
@@ -17,13 +18,18 @@ type Doc = {
   vectorStoreId?: string | null;
 };
 
-type RiskItem = { id: string; createdAt: string; result: any; inputMeta?: any };
+type RiskItem = {
+  id: string;
+  createdAt: string;
+  result: { markdown?: string } | any;
+  inputMeta?: any;
+};
 
 type ScopeCheckItem = {
   id: string;
   createdAt: string;
   request: string;
-  result: any;
+  result: { markdown?: string } | any;
 };
 
 function StatusBadge({ status }: { status?: string }) {
@@ -41,6 +47,20 @@ function StatusBadge({ status }: { status?: string }) {
       {label}
     </span>
   );
+}
+
+function getMarkdown(result: any): string {
+  // nuovo formato: { markdown: "..." }
+  if (result && typeof result.markdown === "string") return result.markdown;
+
+  // fallback per vecchi record (se avevi reportMarkdown o simili)
+  if (result && typeof result.reportMarkdown === "string")
+    return result.reportMarkdown;
+
+  // fallback estremo: stringa "raw"
+  if (typeof result === "string") return result;
+
+  return "";
 }
 
 export default function ProjectDetailPage({
@@ -155,7 +175,7 @@ export default function ProjectDetailPage({
       // 3) Prepare: upload OpenAI + vector store + poll -> AI_READY
       await prepareMutation.mutateAsync(newDocId);
 
-      // 4) refresh histories (opzionale)
+      // 4) refresh histories
       await qc.invalidateQueries({ queryKey: ["risk-history", projectId] });
       await qc.invalidateQueries({ queryKey: ["scope-history", projectId] });
     } catch (e) {
@@ -227,9 +247,8 @@ export default function ProjectDetailPage({
             Dettaglio progetto
           </div>
           <div className="mt-1 text-sm text-zinc-500">
-            Carica un preventivo (PDF/DOCX). Il sistema lo prepara
-            (OpenAI+Vector Store) e poi puoi eseguire Risk Analysis e Scope
-            Check.
+            Carica un preventivo (PDF/DOCX). Il sistema lo prepara (OpenAI +
+            Vector Store) e poi puoi eseguire Risk Analysis e Scope Check.
           </div>
         </div>
 
@@ -254,7 +273,9 @@ export default function ProjectDetailPage({
           </div>
 
           <label
-            className={`cursor-pointer rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 ${uploadDisabled ? "opacity-50 pointer-events-none" : ""}`}
+            className={`cursor-pointer rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 ${
+              uploadDisabled ? "pointer-events-none opacity-50" : ""
+            }`}
           >
             {uploading || prepareMutation.isPending
               ? "Preparazione..."
@@ -320,7 +341,7 @@ export default function ProjectDetailPage({
                   Apri
                 </a>
 
-                {activeDoc && activeDoc.status !== "AI_READY" && (
+                {activeDoc.status !== "AI_READY" && (
                   <button
                     type="button"
                     disabled={prepareMutation.isPending}
@@ -344,7 +365,7 @@ export default function ProjectDetailPage({
         )}
       </div>
 
-      {/* ACTIONS: Risk + Scope */}
+      {/* ACTIONS */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Risk */}
         <div className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -377,10 +398,10 @@ export default function ProjectDetailPage({
           )}
 
           {latestRisk && (
-            <JsonCard
-              title="Ultimo Risk Analysis"
+            <MarkdownCard
+              title="Ultimo risultato"
               createdAt={latestRisk.createdAt}
-              result={latestRisk.result}
+              markdown={getMarkdown(latestRisk.result)}
             />
           )}
         </div>
@@ -401,7 +422,7 @@ export default function ProjectDetailPage({
             value={scopeReq}
             onChange={(e) => setScopeReq(e.target.value)}
             placeholder="Es: login email/password senza social è incluso?"
-            className="mt-4 h-24 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm outline-none focus:border-zinc-400 text-black"
+            className="mt-4 h-24 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-black outline-none focus:border-zinc-400"
             disabled={!isReady}
           />
 
@@ -426,50 +447,26 @@ export default function ProjectDetailPage({
           )}
 
           {latestScope && (
-            <>
-              <MarkdownCard
-                title={`Ultimo risultato (${latestScope.result?.verdict ?? "?"})`}
-                createdAt={latestScope.createdAt}
-                markdown={
-                  typeof latestScope.result?.markdown === "string"
-                    ? latestScope.result.markdown
-                    : `**Richiesta:** ${latestScope.request}\n\n**Verdict:** ${latestScope.result?.verdict ?? "?"}`
-                }
-              />
-
-              <JsonCard
-                title="Dettagli tecnici (JSON)"
-                createdAt={latestScope.createdAt}
-                result={{
-                  reportMarkdown: `Richiesta: ${latestScope.request}\nVerdict: ${latestScope.result?.verdict ?? "?"}`,
-                  data: { request: latestScope.request, ...latestScope.result },
-                }}
-              />
-            </>
+            <MarkdownCard
+              title="Ultimo risultato"
+              createdAt={latestScope.createdAt}
+              markdown={getMarkdown(latestScope.result)}
+            />
           )}
         </div>
       </div>
 
-      {/* HISTORIES: Risk + Scope */}
+      {/* HISTORIES */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <HistoryList
           title="Storico Risk Analysis (ultimi 20)"
           loading={riskHistoryQuery.isLoading}
           items={riskHistoryQuery.data?.items ?? []}
-          renderItem={(it: any) => (
-            <div className="space-y-2">
-              <div className="text-xs text-zinc-500">
-                {new Date(it.createdAt).toLocaleString("it-IT")}
-              </div>
-              <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-800">
-                <div className="font-semibold">Summary</div>
-                <div className="mt-1 line-clamp-3">
-                  {typeof it.result?.summary === "string"
-                    ? it.result.summary
-                    : "—"}
-                </div>
-              </div>
-            </div>
+          renderItem={(it: RiskItem) => (
+            <HistoryItem
+              createdAt={it.createdAt}
+              markdown={getMarkdown(it.result)}
+            />
           )}
         />
 
@@ -477,24 +474,21 @@ export default function ProjectDetailPage({
           title="Storico Scope Check (ultimi 20)"
           loading={scopeHistoryQuery.isLoading}
           items={scopeHistoryQuery.data?.items ?? []}
-          renderItem={(it: any) => (
-            <div className="space-y-1">
+          renderItem={(it: ScopeCheckItem) => (
+            <div className="space-y-2">
               <div className="text-xs text-zinc-500">
                 {new Date(it.createdAt).toLocaleString("it-IT")}
               </div>
               <div className="text-sm text-zinc-900">{it.request}</div>
-              <div className="text-xs font-semibold text-zinc-700">
-                {it.result?.verdict ?? "?"}
-                {typeof it.result?.confidence === "number"
-                  ? ` • conf ${it.result.confidence.toFixed(2)}`
-                  : ""}
+              <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                <MarkdownReport markdown={getMarkdown(it.result)} />
               </div>
             </div>
           )}
         />
       </div>
 
-      {/* Storico Upload */}
+      {/* Upload history */}
       <div className="rounded-2xl border border-zinc-200 bg-white">
         <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3">
           <div className="text-sm font-semibold text-zinc-900">
@@ -528,7 +522,6 @@ export default function ProjectDetailPage({
                         </span>
                       ) : null}
                     </div>
-
                     <div className="text-xs text-zinc-500">
                       {new Date(d.createdAt).toLocaleString("it-IT")}
                     </div>
@@ -554,56 +547,46 @@ export default function ProjectDetailPage({
 
 /* ----------------- UI Helpers ----------------- */
 
-function JsonCard({
+function MarkdownCard({
   title,
   createdAt,
-  result,
+  markdown,
 }: {
   title: string;
   createdAt: string;
-  result: {
-    reportMarkdown?: string;
-    data?: any;
-  };
+  markdown: string;
 }) {
-  const [showRaw, setShowRaw] = useState(false);
-
   return (
     <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
-      {/* Header */}
       <div className="flex items-start justify-between gap-3">
-        <div className="text-sm font-semibold text-zinc-900">{title}</div>
+        <div className="text-sm font-semibold text-black">{title}</div>
         <div className="text-xs text-zinc-500">
           {new Date(createdAt).toLocaleString("it-IT")}
         </div>
       </div>
 
-      {/* ✅ REPORT UMANO */}
-      {result?.reportMarkdown && (
-        <div className="prose prose-sm mt-4 max-w-none text-zinc-800">
-          {result.reportMarkdown.split("\n").map((line, i) => (
-            <p key={i}>{line}</p>
-          ))}
-        </div>
-      )}
+      <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+        <MarkdownReport markdown={markdown} />
+      </div>
+    </div>
+  );
+}
 
-      {/* Toggle JSON */}
-      {result?.data && (
-        <div className="mt-4">
-          <button
-            onClick={() => setShowRaw((v) => !v)}
-            className="text-xs font-semibold text-zinc-600 hover:text-zinc-900"
-          >
-            {showRaw ? "Nascondi dettagli tecnici" : "Mostra dettagli tecnici"}
-          </button>
-
-          {showRaw && (
-            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-800">
-              {JSON.stringify(result.data, null, 2)}
-            </pre>
-          )}
-        </div>
-      )}
+function HistoryItem({
+  createdAt,
+  markdown,
+}: {
+  createdAt: string;
+  markdown: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="text-xs text-zinc-500">
+        {new Date(createdAt).toLocaleString("it-IT")}
+      </div>
+      <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+        <MarkdownReport markdown={markdown} />
+      </div>
     </div>
   );
 }
@@ -633,37 +616,13 @@ function HistoryList<T>({
         <div className="p-6 text-sm text-zinc-500">Nessun elemento.</div>
       ) : (
         <ul className="divide-y divide-zinc-100">
-          {(items as any[]).slice(0, 20).map((it) => (
+          {(items as any[]).slice(0, 20).map((it: any) => (
             <li key={it.id} className="px-4 py-3">
-              {renderItem(it as any)}
+              {renderItem(it)}
             </li>
           ))}
         </ul>
       )}
-    </div>
-  );
-}
-
-function MarkdownCard({
-  title,
-  createdAt,
-  markdown,
-}: {
-  title: string;
-  createdAt: string;
-  markdown: string;
-}) {
-  return (
-    <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="text-sm font-semibold text-zinc-900">{title}</div>
-        <div className="text-xs text-zinc-500">
-          {new Date(createdAt).toLocaleString("it-IT")}
-        </div>
-      </div>
-      <div className="mt-3 whitespace-pre-wrap rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-800">
-        {markdown}
-      </div>
     </div>
   );
 }

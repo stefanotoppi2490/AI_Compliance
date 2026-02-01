@@ -33,50 +33,6 @@ export async function GET(
   return NextResponse.json({ ok: true, items });
 }
 
-const SCOPE_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "verdict",
-    "confidence",
-    "markdown",
-    "reasons",
-    "missingInfo",
-    "suggestedReply",
-  ],
-  properties: {
-    verdict: { type: "string", enum: ["IN_SCOPE", "OUT_OF_SCOPE", "UNCLEAR"] },
-    confidence: { type: "number" },
-    // ✅ questo è quello che mostri "sopra"
-    markdown: { type: "string" },
-    reasons: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["text", "evidence"],
-        properties: {
-          text: { type: "string" },
-          evidence: { type: "string" },
-        },
-      },
-    },
-    missingInfo: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["text", "evidence"],
-        properties: {
-          text: { type: "string" },
-          evidence: { type: "string" },
-        },
-      },
-    },
-    suggestedReply: { type: "string" },
-  },
-} as const;
-
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ projectId: string }> },
@@ -130,32 +86,33 @@ export async function POST(
       {
         role: "system",
         content:
-          "You are a senior contract analyst. Classify a client request against the uploaded quote/contract. Be strict and avoid assumptions.",
+          "You are a senior contract analyst. You must classify a client request against the uploaded quote/contract. Be strict. Use ONLY what is in the document.",
       },
       {
         role: "user",
         content: `
-  Client request:
-  "${requestText}"
-  
-  Task:
-  Decide IN_SCOPE / OUT_OF_SCOPE / UNCLEAR using ONLY the document content.
-  - If not explicitly covered, prefer OUT_OF_SCOPE.
-  - If boundaries are missing, use UNCLEAR and list the missing info.
-  - Evidence must quote relevant text from the document.
-  
-  Also produce a short, clear Markdown summary for the UI (title + verdict + 2-4 bullets + suggested reply).
+Client request:
+"${requestText}"
+
+Return ONLY Markdown (no JSON).
+
+Format (exactly):
+# Scope Check
+## Verdict: IN_SCOPE | OUT_OF_SCOPE | UNCLEAR
+### Perché
+- 2-5 bullet, con riferimenti a clausole / frasi del documento (quote brevi).
+### Cosa manca (se UNCLEAR)
+- bullet con domande puntuali / info mancanti (solo se serve)
+### Risposta suggerita (email breve)
+Testo in 3-6 righe, in italiano.
+
+Rules:
+- If not explicitly covered, prefer OUT_OF_SCOPE.
+- If the document does not define boundaries clearly, use UNCLEAR and ask targeted questions.
+- Do NOT invent evidence. If you can't find it, say it clearly.
         `.trim(),
       },
     ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: "scope_check",
-        strict: true,
-        schema: SCOPE_SCHEMA,
-      },
-    },
     tools: [
       {
         type: "file_search",
@@ -165,22 +122,31 @@ export async function POST(
     ],
   });
 
-  const raw = getResponseText(resp);
-  if (!raw) {
+  const markdown = getResponseText(resp)?.trim();
+
+  if (!markdown) {
+    console.error("Empty AI response (scope-check)", {
+      id: resp?.id,
+      status: resp?.status,
+      outputTypes: Array.isArray(resp?.output)
+        ? (resp.output as any[]).map((x) => x?.type)
+        : null,
+      usage: resp?.usage,
+    });
+
     return NextResponse.json(
       { ok: false, error: "Empty AI response" },
       { status: 500 },
     );
   }
 
-  const parsed = JSON.parse(raw);
-
+  // Salviamo in Prisma come JSON minimal (coerente con UI)
   const item = await prisma.scopeCheck.create({
     data: {
       projectId,
       documentId: doc.id,
       request: requestText,
-      result: parsed,
+      result: { markdown },
     },
   });
 
