@@ -249,7 +249,7 @@ export async function POST(
   }
 
   const resp = await openai.responses.create({
-    model: "gpt-4o-mini",
+    model: "gpt-5.2",
     input: [
       {
         role: "system",
