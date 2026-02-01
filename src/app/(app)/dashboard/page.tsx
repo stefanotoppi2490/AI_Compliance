@@ -17,6 +17,7 @@ export default function DashboardPage() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["projects"],
@@ -38,6 +39,15 @@ export default function DashboardPage() {
       setName("");
       await qc.invalidateQueries({ queryKey: ["projects"] });
       router.push(`/projects/${res.project.id}`);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (projectId: string) =>
+      clientFetch(`/api/projects/${projectId}`, { method: "DELETE" }),
+    onSuccess: async () => {
+      setDeleteTarget(null);
+      await qc.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 
@@ -112,18 +122,86 @@ export default function DashboardPage() {
             {projects.map((p) => (
               <li
                 key={p.id}
-                className="cursor-pointer px-4 py-3 hover:bg-zinc-50"
+                className="group flex cursor-pointer items-center justify-between gap-2 px-4 py-3 hover:bg-zinc-50"
                 onClick={() => router.push(`/projects/${p.id}`)}
               >
-                <div className="font-semibold text-zinc-900">{p.name}</div>
-                <div className="mt-1 text-xs text-zinc-500">
-                  Creato: {new Date(p.createdAt).toLocaleString("it-IT")}
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-zinc-900">{p.name}</div>
+                  <div className="mt-1 text-xs text-zinc-500">
+                    Creato: {new Date(p.createdAt).toLocaleString("it-IT")}
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleteTarget(p);
+                  }}
+                  className="rounded-lg p-2 text-zinc-400 hover:bg-red-50 hover:text-red-600"
+                  title="Elimina progetto"
+                  aria-label="Elimina progetto"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M3 6h18" />
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                    <line x1="10" x2="10" y1="11" y2="17" />
+                    <line x1="14" x2="14" y1="11" y2="17" />
+                  </svg>
+                </button>
               </li>
             ))}
           </ul>
         )}
       </div>
+
+      {/* Modal conferma eliminazione */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+            <div className="text-lg font-extrabold text-zinc-900">
+              Elimina progetto
+            </div>
+            <div className="mt-1 text-sm text-zinc-500">
+              Vuoi eliminare <strong>{deleteTarget.name}</strong>? Questa azione
+              non può essere annullata (documenti e analisi saranno eliminati).
+            </div>
+
+            {deleteMutation.isError && (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {(deleteMutation.error as Error).message}
+              </div>
+            )}
+
+            <div className="mt-5 flex gap-2">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleteMutation.isPending}
+                className="flex-1 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+              >
+                Annulla
+              </button>
+              <button
+                disabled={deleteMutation.isPending}
+                onClick={() => deleteMutation.mutate(deleteTarget.id)}
+                className="flex-1 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleteMutation.isPending ? "Eliminazione..." : "Elimina"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal create project */}
       {open && (
