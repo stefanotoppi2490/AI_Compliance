@@ -44,6 +44,7 @@ model Project {
   documents     Document[]
   riskAnalyses  RiskAnalysis[]
   scopeChecks   ScopeCheck[]
+  generatedProposals GeneratedProposal[]
 
   @@index([ownerId])
 }
@@ -73,6 +74,7 @@ model Document {
 
   riskAnalyses RiskAnalysis[]
   scopeChecks  ScopeCheck[]
+  generatedProposals GeneratedProposal[]
 
   @@index([projectId, isActive])
 }
@@ -104,6 +106,30 @@ model ScopeCheck {
   request   String
   result    Json
   createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([documentId])
+}
+
+model GeneratedProposal {
+  id         String   @id @default(cuid())
+  projectId  String
+  documentId String
+  createdAt  DateTime @default(now())
+
+  // contenuto per UI (render markdown)
+  markdown   String
+
+  // file scaricabile
+  blobUrl    String
+  filename   String
+  mimeType   String   @default("text/markdown; charset=utf-8")
+
+  // metadati
+  inputMeta  Json?
+
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@index([projectId, createdAt])
   @@index([documentId])

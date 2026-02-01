@@ -32,6 +32,14 @@ type ScopeCheckItem = {
   result: { markdown?: string } | any;
 };
 
+type GeneratedProposalItem = {
+  id: string;
+  createdAt: string;
+  documentId: string;
+  filename: string;
+  blobUrl: string;
+};
+
 function StatusBadge({ status }: { status?: string }) {
   const s = status ?? "UPLOADED";
   const cls =
@@ -178,6 +186,7 @@ export default function ProjectDetailPage({
       // 4) refresh histories
       await qc.invalidateQueries({ queryKey: ["risk-history", projectId] });
       await qc.invalidateQueries({ queryKey: ["scope-history", projectId] });
+      await qc.invalidateQueries({ queryKey: ["proposal-history", projectId] });
     } catch (e) {
       setFileErr((e as Error).message || "Upload failed");
     } finally {
@@ -229,14 +238,47 @@ export default function ProjectDetailPage({
     onSuccess: async () => {
       setScopeReq("");
       await qc.invalidateQueries({ queryKey: ["scope-history", projectId] });
+      await qc.invalidateQueries({ queryKey: ["proposal-history", projectId] });
     },
   });
 
   const latestRisk = riskHistoryQuery.data?.items?.[0] ?? null;
   const latestScope = scopeHistoryQuery.data?.items?.[0] ?? null;
 
+  // ✅ bottone proposal solo se esiste una risk analysis (meglio: per doc attivo)
+  const hasRiskForActiveDoc = useMemo(() => {
+    if (!activeDoc) return false;
+    const items = riskHistoryQuery.data?.items ?? [];
+    // se RiskItem non ha documentId nel payload, usa la regola "almeno una risk"
+    // MA consigliato: aggiungi documentId al GET /risk-analysis per filtrare bene.
+    return items.length > 0;
+  }, [activeDoc, riskHistoryQuery.data?.items]);
+
   const uploadDisabled =
     uploading || createDocMutation.isPending || prepareMutation.isPending;
+
+  // ---- Generated proposals history
+  const proposalHistoryQuery = useQuery({
+    queryKey: ["proposal-history", projectId],
+    queryFn: async () =>
+      clientFetch<{ ok: true; items: GeneratedProposalItem[] }>(
+        `/api/projects/${projectId}/generated-proposal`,
+      ),
+  });
+
+  // ---- Generate proposal
+  const generateProposalMutation = useMutation({
+    mutationFn: async () =>
+      clientFetch<{ ok: true; item: GeneratedProposalItem }>(
+        `/api/projects/${projectId}/generated-proposal`,
+        { method: "POST" },
+      ),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["proposal-history", projectId] });
+    },
+  });
+
+  const latestProposal = proposalHistoryQuery.data?.items?.[0] ?? null;
 
   return (
     <div className="space-y-6">
@@ -380,16 +422,85 @@ export default function ProjectDetailPage({
           </div>
 
           <button
-            disabled={!isReady || riskMutation.isPending}
-            onClick={() => riskMutation.mutate()}
+            disabled={
+              !isReady ||
+              !hasRiskForActiveDoc ||
+              generateProposalMutation.isPending
+            }
+            onClick={() => generateProposalMutation.mutate()}
             className="mt-4 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
           >
             {!isReady
               ? "Documento non pronto (AI_READY richiesto)"
-              : riskMutation.isPending
-                ? "Analisi..."
-                : "Esegui Risk Analysis"}
+              : !hasRiskForActiveDoc
+                ? "Esegui prima la Risk Analysis"
+                : generateProposalMutation.isPending
+                  ? "Generazione..."
+                  : "Genera versione ottimizzata"}
           </button>
+          {isReady && !hasRiskForActiveDoc && (
+            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              Per generare la versione ottimizzata serve prima una Risk Analysis
+              (usata come checklist).
+            </div>
+          )}
+          {/* Generated Proposal */}
+          <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5">
+            <div>
+              <div className="text-sm font-semibold text-zinc-900">
+                Preventivo ottimizzato
+              </div>
+              <div className="mt-1 text-xs text-zinc-500">
+                Genera una versione ottimizzata e scaricabile (DOCX). Richiede
+                documento AI_READY.
+              </div>
+            </div>
+
+            <button
+              disabled={!isReady || generateProposalMutation.isPending}
+              onClick={() => generateProposalMutation.mutate()}
+              className="mt-4 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {!isReady
+                ? "Documento non pronto (AI_READY richiesto)"
+                : generateProposalMutation.isPending
+                  ? "Generazione..."
+                  : "Genera versione ottimizzata"}
+            </button>
+
+            {generateProposalMutation.isError && (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {(generateProposalMutation.error as Error).message}
+              </div>
+            )}
+
+            {/* ✅ QUI: solo link download, niente markdown */}
+            {latestProposal && (
+              <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-zinc-900 truncate">
+                      {latestProposal.filename}
+                    </div>
+                    <div className="mt-1 text-xs text-zinc-500">
+                      {new Date(latestProposal.createdAt).toLocaleString(
+                        "it-IT",
+                      )}
+                    </div>
+                  </div>
+
+                  <a
+                    href={latestProposal.blobUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 rounded-xl bg-zinc-900 px-3 py-2 text-sm font-semibold text-white hover:bg-zinc-800"
+                  >
+                    Scarica versione ottimizzata
+                  </a>
+                </div>
+              </div>
+            )}
+          </div>
 
           {riskMutation.isError && (
             <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
