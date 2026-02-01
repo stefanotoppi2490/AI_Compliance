@@ -456,10 +456,11 @@ export default function ProjectDetailPage({
         </div>
       </div>
 
-      {/* HISTORIES */}
+      {/* HISTORIES (accordion) */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <HistoryList
-          title="Storico Risk Analysis (ultimi 20)"
+        <HistoryAccordion
+          title="Storico Contract Risk Analysis"
+          subtitle="ultimi 20"
           loading={riskHistoryQuery.isLoading}
           items={riskHistoryQuery.data?.items ?? []}
           renderItem={(it: RiskItem) => (
@@ -470,8 +471,9 @@ export default function ProjectDetailPage({
           )}
         />
 
-        <HistoryList
-          title="Storico Scope Check (ultimi 20)"
+        <HistoryAccordion
+          title="Storico Scope Check"
+          subtitle="ultimi 20"
           loading={scopeHistoryQuery.isLoading}
           items={scopeHistoryQuery.data?.items ?? []}
           renderItem={(it: ScopeCheckItem) => (
@@ -591,37 +593,72 @@ function HistoryItem({
   );
 }
 
-function HistoryList<T>({
+function HistoryAccordion<T>({
   title,
+  subtitle,
   loading,
   items,
   renderItem,
 }: {
   title: string;
+  subtitle?: string;
   loading: boolean;
   items: T[];
   renderItem: (it: T) => React.ReactNode;
 }) {
-  return (
-    <div className="rounded-2xl border border-zinc-200 bg-white">
-      <div className="border-b border-zinc-100 px-4 py-3">
-        <div className="text-sm font-semibold text-zinc-900">{title}</div>
-      </div>
+  const [open, setOpen] = useState(false);
+  const list = (items as any[]).slice(0, 20);
 
-      {loading ? (
-        <div className="p-4">
-          <div className="h-20 animate-pulse rounded-xl bg-zinc-100" />
+  return (
+    <div className="rounded-2xl border border-zinc-200 bg-white overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 border-b border-zinc-100 px-4 py-3 text-left hover:bg-zinc-50 transition-colors"
+      >
+        <div className="text-sm font-semibold text-zinc-900">{title}</div>
+        <div className="flex items-center gap-2">
+          {subtitle && (
+            <span className="text-xs text-zinc-500">{subtitle}</span>
+          )}
+          <span
+            className={`inline-block text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </span>
         </div>
-      ) : items.length === 0 ? (
-        <div className="p-6 text-sm text-zinc-500">Nessun elemento.</div>
-      ) : (
-        <ul className="divide-y divide-zinc-100">
-          {(items as any[]).slice(0, 20).map((it: any) => (
-            <li key={it.id} className="px-4 py-3">
-              {renderItem(it)}
-            </li>
-          ))}
-        </ul>
+      </button>
+
+      {open && (
+        <>
+          {loading ? (
+            <div className="p-4">
+              <div className="h-20 animate-pulse rounded-xl bg-zinc-100" />
+            </div>
+          ) : list.length === 0 ? (
+            <div className="p-6 text-sm text-zinc-500">Nessun elemento.</div>
+          ) : (
+            <ul className="divide-y divide-zinc-100">
+              {list.map((it: any) => (
+                <li key={it.id} className="px-4 py-3">
+                  {renderItem(it)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </div>
   );
