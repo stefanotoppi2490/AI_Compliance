@@ -120,6 +120,7 @@ export default function ProjectDetailPage({
       });
       await qc.invalidateQueries({ queryKey: ["risk-history", projectId] });
       await qc.invalidateQueries({ queryKey: ["scope-history", projectId] });
+      await qc.invalidateQueries({ queryKey: ["proposal-history", projectId] });
     },
   });
 
@@ -221,6 +222,7 @@ export default function ProjectDetailPage({
       ),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["risk-history", projectId] });
+      await qc.invalidateQueries({ queryKey: ["proposal-history", projectId] });
     },
   });
 
@@ -238,19 +240,17 @@ export default function ProjectDetailPage({
     onSuccess: async () => {
       setScopeReq("");
       await qc.invalidateQueries({ queryKey: ["scope-history", projectId] });
-      await qc.invalidateQueries({ queryKey: ["proposal-history", projectId] });
     },
   });
 
   const latestRisk = riskHistoryQuery.data?.items?.[0] ?? null;
   const latestScope = scopeHistoryQuery.data?.items?.[0] ?? null;
 
-  // ✅ bottone proposal solo se esiste una risk analysis (meglio: per doc attivo)
+  // ✅ bottone proposal solo se esiste una risk analysis
+  // Nota: senza documentId nel payload risk, questa è “almeno una risk nel progetto”.
   const hasRiskForActiveDoc = useMemo(() => {
     if (!activeDoc) return false;
     const items = riskHistoryQuery.data?.items ?? [];
-    // se RiskItem non ha documentId nel payload, usa la regola "almeno una risk"
-    // MA consigliato: aggiungi documentId al GET /risk-analysis per filtrare bene.
     return items.length > 0;
   }, [activeDoc, riskHistoryQuery.data?.items]);
 
@@ -422,51 +422,70 @@ export default function ProjectDetailPage({
           </div>
 
           <button
-            disabled={
-              !isReady ||
-              !hasRiskForActiveDoc ||
-              generateProposalMutation.isPending
-            }
-            onClick={() => generateProposalMutation.mutate()}
+            disabled={!isReady || riskMutation.isPending}
+            onClick={() => riskMutation.mutate()}
             className="mt-4 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
           >
             {!isReady
               ? "Documento non pronto (AI_READY richiesto)"
-              : !hasRiskForActiveDoc
-                ? "Esegui prima la Risk Analysis"
-                : generateProposalMutation.isPending
-                  ? "Generazione..."
-                  : "Genera versione ottimizzata"}
+              : riskMutation.isPending
+                ? "Analisi..."
+                : "Esegui Risk Analysis"}
           </button>
-          {isReady && !hasRiskForActiveDoc && (
-            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-              Per generare la versione ottimizzata serve prima una Risk Analysis
-              (usata come checklist).
+
+          {riskMutation.isError && (
+            <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {(riskMutation.error as Error).message}
             </div>
           )}
+
+          {latestRisk && (
+            <MarkdownCard
+              title="Ultimo risultato"
+              createdAt={latestRisk.createdAt}
+              markdown={getMarkdown(latestRisk.result)}
+            />
+          )}
+        </div>
+
+        {/* Proposal + Scope */}
+        <div className="space-y-4">
           {/* Generated Proposal */}
-          <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-5">
             <div>
               <div className="text-sm font-semibold text-zinc-900">
                 Preventivo ottimizzato
               </div>
               <div className="mt-1 text-xs text-zinc-500">
                 Genera una versione ottimizzata e scaricabile (DOCX). Richiede
-                documento AI_READY.
+                documento AI_READY + Risk Analysis.
               </div>
             </div>
 
             <button
-              disabled={!isReady || generateProposalMutation.isPending}
+              disabled={
+                !isReady ||
+                !hasRiskForActiveDoc ||
+                generateProposalMutation.isPending
+              }
               onClick={() => generateProposalMutation.mutate()}
               className="mt-4 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
             >
               {!isReady
                 ? "Documento non pronto (AI_READY richiesto)"
-                : generateProposalMutation.isPending
-                  ? "Generazione..."
-                  : "Genera versione ottimizzata"}
+                : !hasRiskForActiveDoc
+                  ? "Esegui prima la Risk Analysis"
+                  : generateProposalMutation.isPending
+                    ? "Generazione..."
+                    : "Genera versione ottimizzata"}
             </button>
+
+            {isReady && !hasRiskForActiveDoc && (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                Per generare la versione ottimizzata serve prima una Risk
+                Analysis (usata come checklist).
+              </div>
+            )}
 
             {generateProposalMutation.isError && (
               <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -502,68 +521,56 @@ export default function ProjectDetailPage({
             )}
           </div>
 
-          {riskMutation.isError && (
-            <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {(riskMutation.error as Error).message}
+          {/* Scope */}
+          <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+            <div>
+              <div className="text-sm font-semibold text-zinc-900">
+                Scope Check
+              </div>
+              <div className="mt-1 text-xs text-zinc-500">
+                Incolla una richiesta del cliente e verifica se è in scope.
+                Richiede documento AI_READY.
+              </div>
             </div>
-          )}
 
-          {latestRisk && (
-            <MarkdownCard
-              title="Ultimo risultato"
-              createdAt={latestRisk.createdAt}
-              markdown={getMarkdown(latestRisk.result)}
+            <textarea
+              value={scopeReq}
+              onChange={(e) => setScopeReq(e.target.value)}
+              placeholder="Es: login email/password senza social è incluso?"
+              className="mt-4 h-24 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-black outline-none focus:border-zinc-400"
+              disabled={!isReady}
             />
-          )}
-        </div>
 
-        {/* Scope */}
-        <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-          <div>
-            <div className="text-sm font-semibold text-zinc-900">
-              Scope Check
-            </div>
-            <div className="mt-1 text-xs text-zinc-500">
-              Incolla una richiesta del cliente e verifica se è in scope.
-              Richiede documento AI_READY.
-            </div>
+            <button
+              disabled={
+                !isReady ||
+                scopeMutation.isPending ||
+                scopeReq.trim().length < 6
+              }
+              onClick={() => scopeMutation.mutate()}
+              className="mt-3 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {!isReady
+                ? "Documento non pronto (AI_READY richiesto)"
+                : scopeMutation.isPending
+                  ? "Check..."
+                  : "Verifica richiesta"}
+            </button>
+
+            {scopeMutation.isError && (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {(scopeMutation.error as Error).message}
+              </div>
+            )}
+
+            {latestScope && (
+              <MarkdownCard
+                title="Ultimo risultato"
+                createdAt={latestScope.createdAt}
+                markdown={getMarkdown(latestScope.result)}
+              />
+            )}
           </div>
-
-          <textarea
-            value={scopeReq}
-            onChange={(e) => setScopeReq(e.target.value)}
-            placeholder="Es: login email/password senza social è incluso?"
-            className="mt-4 h-24 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-black outline-none focus:border-zinc-400"
-            disabled={!isReady}
-          />
-
-          <button
-            disabled={
-              !isReady || scopeMutation.isPending || scopeReq.trim().length < 6
-            }
-            onClick={() => scopeMutation.mutate()}
-            className="mt-3 w-full rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50"
-          >
-            {!isReady
-              ? "Documento non pronto (AI_READY richiesto)"
-              : scopeMutation.isPending
-                ? "Check..."
-                : "Verifica richiesta"}
-          </button>
-
-          {scopeMutation.isError && (
-            <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {(scopeMutation.error as Error).message}
-            </div>
-          )}
-
-          {latestScope && (
-            <MarkdownCard
-              title="Ultimo risultato"
-              createdAt={latestScope.createdAt}
-              markdown={getMarkdown(latestScope.result)}
-            />
-          )}
         </div>
       </div>
 
@@ -733,7 +740,9 @@ function HistoryAccordion<T>({
             <span className="text-xs text-zinc-500">{subtitle}</span>
           )}
           <span
-            className={`inline-block text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`}
+            className={`inline-block text-zinc-500 transition-transform ${
+              open ? "rotate-180" : ""
+            }`}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
